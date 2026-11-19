@@ -66,12 +66,18 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
                 <CardDescription>
                   {interval.method === "quantile_model"
                     ? "Learned P10 / P50 / P90 quantile models (pinball loss: lower is better)."
-                    : "Empirical P10–P90 band from validation residuals (coverage is in-sample)."}
+                    : "Empirical P10–P90 band from validation residuals; pinball treats the forecast as P50."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid grid-cols-2 gap-3 text-sm">
                 <span className="text-muted-foreground">P10–P90 coverage</span>
                 <span className="text-right font-medium">{formatPct(interval.coverage)} <span className="text-xs text-muted-foreground">(target 80%)</span></span>
+                {interval.coverage_holdout != null ? (
+                  <>
+                    <span className="text-muted-foreground">Out-of-sample coverage</span>
+                    <span className="text-right">{formatPct(interval.coverage_holdout)}</span>
+                  </>
+                ) : null}
                 <span className="text-muted-foreground">Mean band width</span>
                 <span className="text-right">{formatNumber(interval.mean_width, 2)}</span>
                 {interval.pinball_p50 !== undefined ? (

@@ -80,6 +80,7 @@ def prepare_data(
         mapping, horizon, {k: v for k, v in (store_static or {}).items() if k in present}
     )
     spec.seq_len = seq_len
+    spec.seq_covariates = spec.default_seq_covariates() if seq_len else []
     full = complete_calendar(raw)
     feats = build_features(full, spec, fit_categories=True)
     cutoff = feats["ds"].max() - pd.Timedelta(days=validation_days)
@@ -153,6 +154,22 @@ def _fit_once(
     return model, logs, preds
 
 
+def _holdout_coverage(data: PreparedData, preds: np.ndarray) -> float | None:
+    """Out-of-sample check of the empirical band: calibrate on the first half of the validation
+    window, measure P10-P90 coverage on the second half."""
+    ds = data.val_frame["ds"].to_numpy()
+    days = np.unique(ds)
+    if len(days) < 4:
+        return None
+    first = ds <= days[len(days) // 2 - 1]
+    band = empirical_interval(data.y_val[first], preds[first])
+    if not band:
+        return None
+    p, y = preds[~first], data.y_val[~first]
+    lo, hi = np.clip(p * (1 + band["lower"]), 0, None), p * (1 + band["upper"])
+    return interval_metrics(y, lo, hi)["coverage"]
+
+
 def evaluate_model(model: ForecastModel, data: PreparedData, preds: np.ndarray) -> dict[str, Any]:
     """Validation metrics stored on the run: point metrics (incl. RMSSE, R2), the interval used at
     inference with its coverage/pinball loss, and the ensemble comparison when present."""
@@ -170,8 +187,11 @@ def evaluate_model(model: ForecastModel, data: PreparedData, preds: np.ndarray) 
         if interval:
             lo = np.clip(preds * (1 + interval["lower"]), 0, None)
             hi = preds * (1 + interval["upper"])
-            # Coverage is in-sample here: the band was calibrated on this same window.
-            metrics["interval"] = {**interval, **interval_metrics(data.y_val, lo, hi)}
+            # Coverage is in-sample here: the band was calibrated on this same window. Pinball losses
+            # treat the band as P10/P90 and the point forecast as P50, comparable to quantile models.
+            q = {0.1: lo, 0.5: preds, 0.9: hi}
+            metrics["interval"] = {**interval, **interval_metrics(data.y_val, lo, hi, q)}
+            metrics["interval"]["coverage_holdout"] = _holdout_coverage(data, preds)
     comparison = getattr(model, "comparison", None)
     if comparison:
         metrics["ensemble"] = comparison
@@ -331,12 +351,15 @@ def tune(
     # window is only used once, to report the tuned model.
     inner = inner_split(data, validation_days)
     best_rounds: dict[int, int] = {}
+    best_epochs: dict[int, int] = {}
 
     def objective(trial: optuna.Trial) -> float:
         params = {**base_params, **suggest_params(trial, search_space)}
         model_t, _, preds = _fit_once(family, inner, params, device, None)
         if "best_iteration" in model_t.params:
             best_rounds[trial.number] = int(model_t.params["best_iteration"])
+        elif "best_epoch" in model_t.params:
+            best_epochs[trial.number] = int(model_t.params["best_epoch"])
         m = inner.metrics(preds)
         value = m.get(metric)
         if value is None:
@@ -378,6 +401,9 @@ def tune(
             "num_boost_round": max(1, round(best_rounds[study.best_trial.number] * scale)),
             "early_stopping_rounds": 0,
         }
+    elif study.best_trial.number in best_epochs:
+        # Neural nets: fix the epoch count found on the inner split; no early stopping on the final window.
+        best_params |= {"max_epochs": max(1, best_epochs[study.best_trial.number]), "patience": 0}
     progress.update(0.86, "training_best", force=True)
     model, logs, preds = _fit_once(family, data, best_params, device, progress.sub(0.86, 0.93))
     result = _finalize(

@@ -173,6 +173,8 @@ export interface ModelRun {
 export interface IntervalMetrics {
   method: "quantile_model" | "empirical_relative_residual";
   coverage?: number;
+  /** Empirical band only: calibrated on the first half of validation, measured on the second. */
+  coverage_holdout?: number | null;
   mean_width?: number;
   levels?: number[];
   pinball_p10?: number;

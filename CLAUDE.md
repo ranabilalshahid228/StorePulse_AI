@@ -237,14 +237,17 @@ default params **91.52 %** (WAPE 0.0848, RMSPE 0.1245, R² 0.954); 25-trial tuni
 - Training options per run (`training_config`): `history_days`, `use_store_features`.
 - **Honest tuning** (`training.tune`): Optuna trials are scored on `inner_split` — the last
   `validation_days` of the *training* period — never on the reported validation window. For GBDT the
-  best trial's round count is scaled to the full training set and fixed (`early_stopping_rounds=0`), so
-  the final validation metrics stay out-of-sample; `metrics.tuning` records the scheme. LightGBM also
+  best trial's round count is scaled to the full training set and fixed (`early_stopping_rounds=0`);
+  for neural nets the best epoch count is fixed (`patience=0`). The final validation metrics stay
+  out-of-sample; `metrics.tuning` records the scheme. LightGBM also
   accepts `target_transform="log1p"` and `early_stopping_rounds<=0` (disable).
 - Validation = last `validation_days` (default = horizon). Metrics (`ml/metrics.py`): MAE, RMSE, WAPE,
   RMSSE (M5 definition: per-series RMSE scaled by the training-period one-step naive error, averaged
   over series), R², MAPE, sMAPE, RMSPE (Rossmann), bias. Tune on any of wape/rmse/mae/rmspe/rmsse.
 - Intervals: quantile models give P10/P50/P90 directly (pinball loss + coverage reported); otherwise an
-  empirical P10–P90 band from relative validation residuals (coverage reported, in-sample). Aggregated
+  empirical P10–P90 band from relative validation residuals (in-sample coverage, plus
+  `coverage_holdout`: calibrated on the first half of validation, measured on the second; pinball
+  losses treat the band as P10/P90 and the point forecast as P50). Aggregated
   forecast bands are sums of per-series bands — conservative for the total.
 - Families (`ml/families.py`; add one: subclass `ForecastModel`, register in `FAMILIES`, `ModelFamily`
   enum, frontend `types.ts`; tabular models read `spec.feature_columns`, sequence models
@@ -253,9 +256,15 @@ default params **91.52 %** (WAPE 0.0848, RMSPE 0.1245, R² 0.954); 25-trial tuni
   - `lightgbm` — `objective=auto` → Tweedie (`tweedie_variance_power`, tunable 1.05–1.9) when the target
     is zero-heavy (>30 % zeros, non-negative), else L2; `quantiles=auto` trains P10/P50/P90 boosters
     for such targets (sorted to remove crossing).
-  - `torch_mlp` — embeddings + MLP; `loss=auto` → Poisson (log-rate output) for zero-heavy targets,
-    else standardized log1p MSE; batch capped for ≥50 steps/epoch.
-  - `torch_gru` — GRU over the scale-normalized `seq_len`-day window, fused with the tabular path.
+  - `torch_mlp` — embeddings + MLP over the same tabular features as LightGBM (wide-range numeric
+    inputs get signed log1p, `feature_log`). `loss=auto` → Poisson (log-rate output) for zero-heavy
+    targets, else MSE in z-scored `target_transform` space (`log1p` default, or `standard` = raw
+    units); decoding clips to [0, 5× training max] so expm1 can't overflow. `quantiles` (auto/true/false)
+    adds P10/P50/P90 heads trained with pinball loss in the same space (monotone inverse → valid
+    quantiles, sorted, ≥ 0). `patience<=0` trains a fixed `max_epochs`; `best_epoch` is recorded.
+    Batch capped for ≥50 steps/epoch.
+  - `torch_gru` — GRU over the `seq_len`-day sales window (scaled by its open-day mean) plus open /
+    promo history channels (`seqx_{col}_{k}`, from `spec.seq_covariates`), fused with the tabular path.
   - `ensemble` — trains `members` (default LightGBM + GRU) and blends them. Weights (grid search for
     2 members, NNLS otherwise) are fitted on the **first half** of the validation window; members,
     equal-weight and fitted blends are all scored on the **second half** (`metrics.ensemble`). Torch

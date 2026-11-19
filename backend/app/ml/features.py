@@ -70,6 +70,8 @@ class FeatureSpec:
     agg_groups: list[list[str]] = field(default_factory=list)
     # >0 adds seq_0..seq_{n-1} (target window ending at the lag origin) for sequence models.
     seq_len: int = 0
+    # Known covariates (open / promo flags) windowed alongside seq_*, as seqx_{col}_{k}.
+    seq_covariates: list[str] = field(default_factory=list)
     # With an open flag: train only on open days and predict exactly 0 when the store is closed.
     zero_when_closed: bool = True
     # store_code -> Store attributes (store_type, assortment, competition_*, promo2_*), frozen at train time
@@ -101,7 +103,15 @@ class FeatureSpec:
 
     @property
     def sequence_columns(self) -> list[str]:
-        return [f"seq_{k}" for k in range(self.seq_len)]
+        cols = [f"seq_{k}" for k in range(self.seq_len)]
+        for c in self.seq_covariates:
+            cols += [f"seqx_{c}_{k}" for k in range(self.seq_len)]
+        return cols
+
+    def default_seq_covariates(self) -> list[str]:
+        """Open / promo flags (when mapped as known-future) for sequence-model input channels."""
+        cols = [self.open_column, self.promo_column]
+        return [c for c in dict.fromkeys(cols) if c and c in self.known_future]
 
     @property
     def model_columns(self) -> list[str]:
@@ -275,6 +285,11 @@ def build_features(df: pd.DataFrame, spec: FeatureSpec, *, fit_categories: bool)
 
     for c in spec.known_future:
         out[c] = pd.to_numeric(out[c], errors="coerce").astype("float32")
+    # Covariate history aligned with the seq_* window (lets sequence models tell closures from demand).
+    for c in spec.seq_covariates:
+        by_c = out[c].groupby(gid, sort=False)
+        for k in range(spec.seq_len):
+            out[f"seqx_{c}_{k}"] = by_c.shift(o + k)
 
     price_cols: list[str] = []
     if spec.price_column and spec.price_column in out:

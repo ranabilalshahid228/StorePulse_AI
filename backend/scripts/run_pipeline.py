@@ -75,31 +75,44 @@ TUNE_SPACE = {
 }
 
 
-def tune_lightgbm(data: PreparedData, base: dict[str, Any], n_trials: int, days: int) -> dict[str, Any]:
+TORCH_TUNE_SPACE = {
+    "lr": {"type": "float", "low": 3e-4, "high": 3e-3, "log": True},
+    "dropout": {"type": "float", "low": 0.0, "high": 0.3},
+    "weight_decay": {"type": "float", "low": 1e-7, "high": 1e-3, "log": True},
+    "batch_size": {"type": "categorical", "choices": [1024, 2048, 4096]},
+    "embedding_dim": {"type": "categorical", "choices": [8, 16]},
+    "target_transform": {"type": "categorical", "choices": ["log1p", "standard"]},
+}
+
+
+def tune_family(
+    family: ModelFamily, data: PreparedData, base: dict[str, Any], n_trials: int, days: int
+) -> dict[str, Any]:
+    """Optuna on an inner split of the training period; the final model gets a fixed budget (GBDT
+    rounds scaled to the full training set, NN epochs) and no early stopping on the final window."""
     import optuna
 
     from app.ml.families import suggest_params
 
     inner = inner_split(data, days)
     print(
-        f"    tuning on inner split: {len(inner.X_tr):,} train / {len(inner.X_val):,} val rows,"
-        f" {n_trials} trials"
+        f"    tuning {family.value} on inner split: {len(inner.X_tr):,} train / {len(inner.X_val):,} val"
+        f" rows, {n_trials} trials"
     )
-    best_rounds: dict[int, int] = {}
+    is_gbdt = family == ModelFamily.LIGHTGBM
+    space = TUNE_SPACE if is_gbdt else TORCH_TUNE_SPACE
+    fixed = {"quantiles": False, "early_stopping_rounds": 100} if is_gbdt else {"quantiles": False}
+    budget: dict[int, int] = {}
 
     def objective(trial: optuna.Trial) -> float:
-        params = {
-            **base,
-            **suggest_params(trial, TUNE_SPACE),
-            "quantiles": False,
-            "early_stopping_rounds": 100,
-        }
-        model, _, preds = _fit_once(ModelFamily.LIGHTGBM, inner, params, "cpu", None)
-        best_rounds[trial.number] = int(model.params["best_iteration"])
+        params = {**base, **suggest_params(trial, space), **fixed}
+        t0 = time.perf_counter()
+        model, _, preds = _fit_once(family, inner, params, "cpu", None)
+        budget[trial.number] = int(model.params["best_iteration" if is_gbdt else "best_epoch"])
         wape = inner.metrics(preds)["wape"]
         print(
             f"      trial {trial.number:>2}: inner ACC {100 * (1 - wape):.2f}%"
-            f"  rounds {best_rounds[trial.number]}  "
+            f"  {'rounds' if is_gbdt else 'epochs'} {budget[trial.number]}  {time.perf_counter() - t0:.0f}s  "
             f"{ {k: round(v, 4) if isinstance(v, float) else v for k, v in trial.params.items()} }",
             flush=True,
         )
@@ -108,13 +121,25 @@ def tune_lightgbm(data: PreparedData, base: dict[str, Any], n_trials: int, days:
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
     study.optimize(objective, n_trials=n_trials)
-    rounds = best_rounds[study.best_trial.number]
-    # Final model: fixed round count (scaled for the extra `days` of data), no early stopping on the
-    # final validation window -> the reported validation score stays fully out-of-sample.
-    n_train = len(inner.X_tr)
-    final_rounds = int(round(rounds * (n_train + len(inner.X_val)) / n_train))
-    print(f"    best inner ACC {100 * (1 - study.best_value):.2f}% -> final model {final_rounds} rounds")
-    return {**base, **study.best_params, "num_boost_round": final_rounds, "early_stopping_rounds": 0}
+    n = budget[study.best_trial.number]
+    if is_gbdt:
+        n = int(round(n * (len(inner.X_tr) + len(inner.X_val)) / len(inner.X_tr)))
+        final = {"num_boost_round": n, "early_stopping_rounds": 0}
+    else:
+        final = {"max_epochs": n, "patience": 0}
+    print(f"    best inner ACC {100 * (1 - study.best_value):.2f}% -> final model {final}")
+    return {**base, **study.best_params, **final}
+
+
+def parse_kv(items: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for kv in items:
+        key, _, val = kv.partition("=")
+        try:
+            out[key] = json.loads(val)
+        except json.JSONDecodeError:
+            out[key] = val
+    return out
 
 
 # ----------------------------------------------------------------------------------------
@@ -229,7 +254,14 @@ def main() -> int:
         type=int,
         default=0,
         metavar="N",
-        help="Optuna-tune LightGBM for N trials on an inner split of the training period",
+        help="Optuna-tune LightGBM / torch families for N trials on an inner split of the training period",
+    )
+    ap.add_argument(
+        "--torch-param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help='extra torch_mlp/torch_gru param, JSON-parsed (repeatable), e.g. target_transform="standard"',
     )
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
@@ -306,16 +338,16 @@ def main() -> int:
                 "objective": args.lgb_objective,
                 "quantiles": quantiles,
             }
-            for kv in args.lgb_param:
-                key, _, val = kv.partition("=")
-                try:
-                    lgb_params[key] = json.loads(val)
-                except json.JSONDecodeError:
-                    lgb_params[key] = val
+            lgb_params |= parse_kv(args.lgb_param)
+            nn_params: dict[str, Any] = {"max_epochs": args.torch_epochs, "quantiles": quantiles}
+            nn_params |= parse_kv(args.torch_param)
+            tune_days = args.validation_days or horizon
             if args.tune and family == ModelFamily.LIGHTGBM:
-                lgb_params = tune_lightgbm(data, lgb_params, args.tune, horizon)
-                summary["tuned_params"] = lgb_params
-            nn_params = {"max_epochs": args.torch_epochs}
+                lgb_params = tune_family(family, data, lgb_params, args.tune, tune_days)
+                summary.setdefault("tuned_params", {})[fam] = lgb_params
+            elif args.tune and family in (ModelFamily.TORCH_MLP, ModelFamily.TORCH_GRU):
+                nn_params = tune_family(family, data, nn_params, args.tune, tune_days)
+                summary.setdefault("tuned_params", {})[fam] = nn_params
             params: dict[str, Any] = {
                 ModelFamily.LIGHTGBM: lgb_params,
                 ModelFamily.TORCH_MLP: nn_params,
@@ -350,9 +382,17 @@ def main() -> int:
                 progress=progress,
             )
             entry = {
+                "accuracy": 1 - m["wape"],
                 **{k: m[k] for k in ("wape", "rmse", "mae", "rmsse", "r2", "rmspe", "bias_pct")},
                 "params": {
-                    k: v for k, v in model.params.items() if k in ("resolved_objective", "fitted_weights")
+                    k: v
+                    for k, v in model.params.items()
+                    if k in ("resolved_objective", "fitted_weights", "best_epoch", "best_iteration")
+                }
+                | {
+                    k: getattr(model, k)
+                    for k in ("loss_kind", "target_transform", "quantile_levels")
+                    if hasattr(model, k)
                 },
                 "interval": interval,
                 "ensemble": m.get("ensemble"),
@@ -373,11 +413,20 @@ def main() -> int:
             def fmt(v: Any) -> str:
                 return "n/a" if v is None else f"{v:.4f}"
 
-            cov = fmt(interval.get("coverage")) if interval else "n/a"
+            iv = interval or {}
+            pinball = (
+                (iv["pinball_p10"] + iv["pinball_p50"] + iv["pinball_p90"]) / 3
+                if "pinball_p50" in iv
+                else None
+            )
             print(
                 f"    {fam:<15} ACC {100 * (1 - m['wape']):.2f}%  WAPE {fmt(m['wape'])}"
-                f"  RMSSE {fmt(m['rmsse'])}  RMSE {fmt(m['rmse'])}  "
-                f"R2 {fmt(m['r2'])}  RMSPE {fmt(m['rmspe'])}  P10-P90 cov {cov}  fit {fit_s:.0f}s"
+                f"  RMSPE {fmt(m['rmspe'])}  RMSSE {fmt(m['rmsse'])}"
+                f"  RMSE {m['rmse']:.1f}  MAE {m['mae']:.1f}  R2 {fmt(m['r2'])}  fit {fit_s:.0f}s"
+            )
+            print(
+                f"    {'':<15} interval {iv.get('method', 'n/a')}: P10-P90 cov {fmt(iv.get('coverage'))}"
+                f" (holdout {fmt(iv.get('coverage_holdout'))})  mean pinball {fmt(pinball)}"
             )
             if m.get("ensemble"):
                 for name, mm in m["ensemble"]["models"].items():

@@ -67,15 +67,30 @@ def test_health_report(canonical: Path) -> None:
                 not FAMILIES[ModelFamily.TORCH_MLP].is_available(), reason="torch not installed"
             ),
         ),
+        pytest.param(
+            ModelFamily.TORCH_GRU,
+            marks=pytest.mark.skipif(
+                not FAMILIES[ModelFamily.TORCH_MLP].is_available(), reason="torch not installed"
+            ),
+        ),
     ],
 )
 def test_train_and_forecast(canonical: Path, family: ModelFamily, progress, tmp_path: Path) -> None:  # noqa: ANN001
-    data = prepare_data(canonical, rossmann_mapping(), HORIZON, HORIZON, None)
-    params = {ModelFamily.LIGHTGBM: {"num_boost_round": 200}, ModelFamily.TORCH_MLP: {"max_epochs": 10}}.get(
-        family, {}
-    )
+    params = {
+        ModelFamily.LIGHTGBM: {"num_boost_round": 200},
+        ModelFamily.TORCH_MLP: {"max_epochs": 10},
+        ModelFamily.TORCH_GRU: {"max_epochs": 6, "seq_len": 28},
+    }.get(family, {})
+    seq_len = FAMILIES[family].required_seq_len(params)
+    data = prepare_data(canonical, rossmann_mapping(), HORIZON, HORIZON, None, seq_len=seq_len)
+    if seq_len:  # GRU windows carry the open / promo history next to the sales window
+        assert data.spec.seq_covariates == ["Open", "Promo"]
+        assert "seqx_Open_0" in data.X_tr.columns
+    assert (data.X_tr["Open"] != 0).all(), "closed days must not be trained on"
     model, logs, preds = _fit_once(family, data, params, "cpu", progress)
     assert logs and len(preds) == len(data.y_val)
+    closed = data.X_val["Open"].to_numpy() == 0
+    assert closed.any() and (preds[closed] == 0).all()
     wape = np.abs(preds - data.y_val).sum() / np.abs(data.y_val).sum()
     assert wape < 0.6, f"{family} WAPE unexpectedly high: {wape:.3f}"
 
@@ -109,6 +124,8 @@ def test_train_and_forecast(canonical: Path, family: ModelFamily, progress, tmp_
     )
     assert len(out) == 3 * HORIZON
     assert out["yhat"].notna().all() and (out["yhat"] >= 0).all()
+    shut = out["is_open"] == 0
+    assert shut.any() and (out.loc[shut, ["yhat", "yhat_lower", "yhat_upper"]].fillna(0) == 0).all().all()
     assert pd.Timestamp(min(out["ds"])) == pd.Timestamp("2015-08-01")
     assert summary["store_count"] == 3
     if family == ModelFamily.LIGHTGBM:
@@ -116,9 +133,38 @@ def test_train_and_forecast(canonical: Path, family: ModelFamily, progress, tmp_
         assert impact["uplift"] > 0, "promo override should raise forecast sales"
 
 
-def test_tune_scores_trials_on_inner_split(canonical: Path, progress, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    """Optuna trials must never see the final validation window; the tuned GBDT trains a fixed
-    number of rounds without early stopping on it."""
+@pytest.mark.parametrize(
+    ("family", "base", "space", "fixed"),
+    [
+        (
+            ModelFamily.LIGHTGBM,
+            {"num_boost_round": 150, "quantiles": False},
+            {"num_leaves": {"type": "int", "low": 15, "high": 63}},
+            {"early_stopping_rounds": 0},
+        ),
+        pytest.param(
+            ModelFamily.TORCH_MLP,
+            {"max_epochs": 3, "patience": 2, "quantiles": False},
+            {"target_transform": {"type": "categorical", "choices": ["log1p", "standard"]}},
+            {"patience": 0},
+            marks=pytest.mark.skipif(
+                not FAMILIES[ModelFamily.TORCH_MLP].is_available(), reason="torch not installed"
+            ),
+        ),
+    ],
+)
+def test_tune_scores_trials_on_inner_split(  # noqa: PLR0913
+    canonical: Path,
+    progress,  # noqa: ANN001
+    tmp_path: Path,
+    monkeypatch,  # noqa: ANN001
+    family: ModelFamily,
+    base: dict,
+    space: dict,
+    fixed: dict,
+) -> None:
+    """Optuna trials must never see the final validation window; the tuned model trains a fixed
+    budget (GBDT rounds / NN epochs) without early stopping on it."""
     import uuid
 
     from app.ml import training
@@ -140,9 +186,9 @@ def test_tune_scores_trials_on_inner_split(canonical: Path, progress, tmp_path: 
         run_id=uuid.uuid4(),
         parquet_path=canonical,
         mapping=rossmann_mapping(),
-        family=ModelFamily.LIGHTGBM,
-        base_params={"num_boost_round": 150, "quantiles": False},
-        search_space={"num_leaves": {"type": "int", "low": 15, "high": 63}},
+        family=family,
+        base_params=base,
+        search_space=space,
         n_trials=2,
         timeout_s=None,
         metric="wape",
@@ -153,5 +199,5 @@ def test_tune_scores_trials_on_inner_split(canonical: Path, progress, tmp_path: 
     )
     final_start = seen[-1][0]
     assert len(seen) == 3 and all(hi < final_start for _, hi in seen[:-1])  # trials never saw final window
-    assert result["hyperparameters"]["early_stopping_rounds"] == 0
+    assert fixed.items() <= result["hyperparameters"].items()
     assert result["metrics"]["tuning"]["scheme"].startswith("inner split")

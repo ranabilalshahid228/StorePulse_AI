@@ -291,9 +291,13 @@ class TorchMLPModel(ForecastModel):
         "weight_decay": 1e-5,
         "batch_size": 4096,
         "max_epochs": 30,
-        "patience": 5,
+        "patience": 5,  # <= 0: no early stopping, keep the weights after max_epochs
         "embedding_dim": 8,
-        "loss": "auto",  # auto (poisson for intermittent targets) | log_mse | poisson
+        "loss": "auto",  # auto (poisson for intermittent targets) | mse | poisson   ("log_mse" = legacy)
+        "target_transform": "log1p",  # log1p | standard   (mse/quantile space; both are z-scored)
+        "quantiles": "auto",  # auto (on for intermittent targets) | true | false: P10/P50/P90 heads
+        "quantile_weight": 0.5,  # pinball-loss weight of the quantile heads vs the point loss
+        "feature_log": True,  # signed log1p on wide-range numeric inputs (sales-scale lags) first
     }
     search_space = {
         "lr": {"type": "float", "low": 1e-4, "high": 1e-2, "log": True},
@@ -301,7 +305,9 @@ class TorchMLPModel(ForecastModel):
         "weight_decay": {"type": "float", "low": 1e-7, "high": 1e-3, "log": True},
         "batch_size": {"type": "categorical", "choices": [1024, 2048, 4096, 8192]},
         "embedding_dim": {"type": "categorical", "choices": [4, 8, 16]},
-        "loss": {"type": "categorical", "choices": ["log_mse", "poisson"]},
+        "loss": {"type": "categorical", "choices": ["mse", "poisson"]},
+        "target_transform": {"type": "categorical", "choices": ["log1p", "standard"]},
+        "quantiles": {"type": "categorical", "choices": [False]},  # tune the point model only
     }
 
     @classmethod
@@ -309,18 +315,33 @@ class TorchMLPModel(ForecastModel):
         return importlib.util.find_spec("torch") is not None
 
     # -- tensor prep -----------------------------------------------------------------------
+    def _log_num(self, num: np.ndarray) -> np.ndarray:
+        mask = getattr(self, "num_log", None)
+        if mask is None or not np.any(mask):
+            return num
+        num = num.copy()
+        num[:, mask] = np.sign(num[:, mask]) * np.log1p(np.abs(num[:, mask]))
+        return num
+
     def _tabular(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         cols = self.spec.feature_columns
         if not hasattr(self, "num_cols"):
             self.cat_cols = [c for c in self.spec.categorical_features if c in cols]
             self.num_cols = [c for c in cols if c not in self.cat_cols]
             num = X[self.num_cols].to_numpy(dtype="float32")
+            if self.params.get("feature_log", True) and len(num):
+                with np.errstate(all="ignore"):
+                    p99 = np.nanquantile(np.abs(num), 0.99, axis=0)
+                self.num_log = np.nan_to_num(p99, nan=0.0) > 50.0
+            else:
+                self.num_log = np.zeros(len(self.num_cols), dtype=bool)
+            num = self._log_num(num)
             fill = np.nanmedian(num, axis=0)
             self.num_fill = np.where(np.isnan(fill), 0.0, fill).astype("float32")
             filled = np.where(np.isnan(num), self.num_fill, num)
             self.num_mean = filled.mean(axis=0)
             self.num_std = filled.std(axis=0) + 1e-6
-        num = X[self.num_cols].to_numpy(dtype="float32")
+        num = self._log_num(X[self.num_cols].to_numpy(dtype="float32"))
         num = (np.where(np.isnan(num), self.num_fill, num) - self.num_mean) / self.num_std
         cat = np.stack([X[c].cat.codes.to_numpy() + 1 for c in self.cat_cols], axis=1).astype("int64")
         return num.astype("float32"), cat  # code 0 == unknown/missing
@@ -332,6 +353,10 @@ class TorchMLPModel(ForecastModel):
         """Optional extra encoder (sequence models); returns (module or None, output width)."""
         return None, 0
 
+    @property
+    def n_outputs(self) -> int:
+        return 1 + len(getattr(self, "quantile_levels", None) or [])
+
     def _build(self) -> Any:
         import torch
         from torch import nn
@@ -341,6 +366,7 @@ class TorchMLPModel(ForecastModel):
         hidden = list(self.params["hidden_sizes"])
         dropout = float(self.params["dropout"])
         n_num = len(self.num_cols)
+        n_out = self.n_outputs
         encoder, enc_dim = self._encoder(nn)
         bias_init = float(getattr(self, "y_bias_init", 0.0))
 
@@ -354,8 +380,10 @@ class TorchMLPModel(ForecastModel):
                 for h in hidden:
                     layers += [nn.Linear(in_dim, h), nn.ReLU(), nn.Dropout(dropout)]
                     in_dim = h
-                head = nn.Linear(in_dim, 1)
-                nn.init.constant_(head.bias, bias_init)
+                head = nn.Linear(in_dim, n_out)
+                nn.init.zeros_(head.bias)
+                with torch.no_grad():
+                    head.bias[0] = bias_init  # quantile heads start at the z-scored mean (0)
                 layers.append(head)
                 self.mlp = nn.Sequential(*layers)
 
@@ -363,40 +391,72 @@ class TorchMLPModel(ForecastModel):
                 parts = [num, *[e(cat[:, i]) for i, e in enumerate(self.embs)]]
                 if self.encoder is not None:
                     parts.append(self.encoder(*extra))
-                return self.mlp(torch.cat(parts, dim=1)).squeeze(1)
+                return self.mlp(torch.cat(parts, dim=1))  # (batch, 1 + n_quantiles)
 
         return Net()
 
-    # -- training --------------------------------------------------------------------------
-    def _target(self, y: np.ndarray) -> np.ndarray:
+    # -- target handling -------------------------------------------------------------------
+    def _resolve(self, y: np.ndarray) -> None:
+        loss = self.params.get("loss", "auto")
+        transform = self.params.get("target_transform", "log1p")
+        if loss == "log_mse":  # legacy name
+            loss, transform = "mse", "log1p"
+        if transform not in ("log1p", "standard"):
+            raise ValueError(f"target_transform must be log1p or standard, not {transform!r}")
+        intermittent = is_intermittent(y)
+        self.loss_kind = ("poisson" if intermittent else "mse") if loss == "auto" else loss
+        self.target_transform = transform
+        q = self.params.get("quantiles", "auto")
+        want = intermittent if q == "auto" else q in (True, "true")
+        self.quantile_levels = list(QUANTILE_LEVELS) if want else []
+
+    def _to_space(self, y: np.ndarray) -> np.ndarray:
+        """Target units -> transform space (log1p or identity), before z-scoring."""
         y = np.clip(np.asarray(y, dtype="float64"), 0, None)
+        return np.log1p(y) if self.target_transform == "log1p" else y
+
+    def _target(self, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(point-loss target, z-scored target used by mse and the quantile heads)."""
+        y = np.clip(np.asarray(y, dtype="float64"), 0, None)
+        v = self._to_space(y)
+        self.y_mu, self.y_sigma = float(v.mean()), float(v.std() + 1e-6)
+        # Decoding cap: 5x the largest training target, so a wild output can't overflow expm1.
+        self.v_max = float(self._to_space(np.array([max(float(y.max()), 1.0) * 5.0]))[0])
+        z = (v - self.y_mu) / self.y_sigma
         if self.loss_kind == "poisson":
             # Network outputs log-rate; start at log(mean) so early epochs aren't spent on the level.
             self.y_bias_init = float(np.log(max(y.mean(), 1e-6)))
-            return y
-        # Standardized log1p: scale-robust across stores/items; output starts at the target mean.
-        log_y = np.log1p(y)
-        self.y_mu, self.y_sigma = float(log_y.mean()), float(log_y.std() + 1e-6)
+            return y, z
         self.y_bias_init = 0.0
-        return (log_y - self.y_mu) / self.y_sigma
+        return z, z
 
-    def _decode(self, z: np.ndarray) -> np.ndarray:
+    def _decode_z(self, z: np.ndarray) -> np.ndarray:
+        """z-scored transform space -> target units, clipped to [0, cap]: safe at zero and at the top."""
+        v = np.clip(z * self.y_sigma + self.y_mu, 0.0, getattr(self, "v_max", np.inf))
+        return np.expm1(v) if self.target_transform == "log1p" else v
+
+    def _decode_point(self, out: np.ndarray) -> np.ndarray:
         if self.loss_kind == "poisson":
-            return np.exp(np.clip(z, -20, 20))
-        return np.expm1(z * self.y_sigma + self.y_mu).clip(min=0)
+            v_max = getattr(self, "v_max", None)
+            cap = (
+                np.inf if v_max is None else (np.expm1(v_max) if self.target_transform == "log1p" else v_max)
+            )
+            return np.minimum(np.exp(np.clip(out, -20, 20)), cap)
+        return self._decode_z(out)
 
     def fit(self, X, y, X_val, y_val, on_epoch) -> None:  # noqa: ANN001
         import torch
 
         torch.manual_seed(42)
         dev = torch.device(self.device)
-        requested = self.params.get("loss", "auto")
-        self.loss_kind = (
-            ("poisson" if is_intermittent(y) else "log_mse") if requested == "auto" else requested
-        )
+        self._resolve(y)
         train_arrays = [torch.tensor(a) for a in self._inputs(X)]
         val_arrays = self._inputs(X_val)
-        yt = torch.tensor(self._target(y), dtype=torch.float32)
+        main, z = self._target(y)
+        yt = torch.tensor(main, dtype=torch.float32)
+        zt = torch.tensor(z, dtype=torch.float32)
+        qs = torch.tensor(self.quantile_levels, dtype=torch.float32, device=dev)
+        q_weight = float(self.params.get("quantile_weight", 0.5))
         self.net = self._build().to(dev)
         opt = torch.optim.AdamW(
             self.net.parameters(), lr=self.params["lr"], weight_decay=self.params["weight_decay"]
@@ -407,7 +467,8 @@ class TorchMLPModel(ForecastModel):
         # Cap the batch so small datasets still get >= ~50 optimizer steps per epoch.
         bs = max(64, min(int(self.params["batch_size"]), len(yt) // 50))
         max_epochs = int(self.params["max_epochs"])
-        best, best_state, bad = float("inf"), None, 0
+        patience = int(self.params["patience"])
+        best, best_state, best_epoch, bad = float("inf"), None, max_epochs, 0
         for epoch in range(1, max_epochs + 1):
             t0 = time.perf_counter()
             self.net.train()
@@ -417,12 +478,15 @@ class TorchMLPModel(ForecastModel):
                 idx = perm[i : i + bs]
                 opt.zero_grad()
                 pred = self.net(*[a[idx].to(dev) for a in train_arrays])
-                loss = loss_fn(pred, yt[idx].to(dev))
+                loss = loss_fn(pred[:, 0], yt[idx].to(dev))
+                if len(qs):
+                    d = zt[idx].to(dev).unsqueeze(1) - pred[:, 1:]
+                    loss = loss + q_weight * torch.maximum(qs * d, (qs - 1) * d).mean()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 5.0)
                 opt.step()
                 total += loss.item() * len(idx)
-            m = regression_metrics(y_val, self._predict_arrays(val_arrays))
+            m = regression_metrics(y_val, self._decode_point(self._raw(val_arrays)[:, 0]))
             entry = {
                 "epoch": epoch,
                 "train_loss": total / len(yt),
@@ -431,18 +495,21 @@ class TorchMLPModel(ForecastModel):
                 "seconds": round(time.perf_counter() - t0, 3),
             }
             on_epoch(entry, epoch / max_epochs)
+            if patience <= 0:
+                continue  # fixed epoch budget (e.g. found by honest tuning): keep the last weights
             score = m["mae"] if m["mae"] is not None else float("inf")
             if score < best:
-                best, bad = score, 0
+                best, bad, best_epoch = score, 0, epoch
                 best_state = {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}
             else:
                 bad += 1
-                if bad >= int(self.params["patience"]):
+                if bad >= patience:
                     break
         if best_state is not None:
             self.net.load_state_dict(best_state)
+        self.params["best_epoch"] = best_epoch
 
-    def _predict_arrays(self, arrays: tuple[np.ndarray, ...]) -> np.ndarray:
+    def _raw(self, arrays: tuple[np.ndarray, ...]) -> np.ndarray:
         import torch
 
         dev = next(self.net.parameters()).device
@@ -450,11 +517,21 @@ class TorchMLPModel(ForecastModel):
         out = []
         with torch.no_grad():
             for i in range(0, len(arrays[0]), 65536):
-                out.append(self.net(*[torch.tensor(a[i : i + 65536]).to(dev) for a in arrays]).cpu().numpy())
-        return self._decode(np.concatenate(out))
+                o = self.net(*[torch.tensor(a[i : i + 65536]).to(dev) for a in arrays]).cpu().numpy()
+                out.append(o.reshape(len(o), -1))
+        return np.concatenate(out)
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return self._predict_arrays(self._inputs(X))
+        return self._decode_point(self._raw(self._inputs(X))[:, 0])
+
+    def predict_quantiles(self, X: pd.DataFrame) -> dict[float, np.ndarray] | None:
+        levels = getattr(self, "quantile_levels", None)
+        if not levels:
+            return None
+        raw = self._raw(self._inputs(X))[:, 1:]
+        # The inverse transform is monotone, so quantiles stay valid; sort removes crossing.
+        qv = np.sort(self._decode_z(raw), axis=1)
+        return {q: qv[:, i] for i, q in enumerate(levels)}
 
     # -- persistence -----------------------------------------------------------------------
     _PREP = (
@@ -463,9 +540,13 @@ class TorchMLPModel(ForecastModel):
         "num_fill",
         "num_mean",
         "num_std",
+        "num_log",
         "loss_kind",
+        "target_transform",
+        "quantile_levels",
         "y_mu",
         "y_sigma",
+        "v_max",
         "y_bias_init",
         "seq_mean",
         "seq_std",
@@ -490,6 +571,12 @@ class TorchMLPModel(ForecastModel):
         for k, v in blob["prep"].items():
             setattr(model, k, v)
         model.loss_kind = blob["prep"].get("loss_kind", "log_mse")
+        if model.loss_kind == "log_mse":  # checkpoints from before target_transform existed
+            model.loss_kind, model.target_transform = "mse", "log1p"
+        model.target_transform = blob["prep"].get("target_transform", "log1p")
+        model.quantile_levels = blob["prep"].get("quantile_levels", [])
+        if model.family == ModelFamily.TORCH_GRU and "seq_covariates" not in blob["params"]:
+            model.params["seq_covariates"] = False  # pre-covariate-channel GRU checkpoint
         model.net = model._build().to(device)
         model.net.load_state_dict(blob["state_dict"])
         return model  # type: ignore[return-value]
@@ -532,6 +619,7 @@ class TorchGRUModel(TorchMLPModel):
         "gru_hidden": 64,
         "gru_layers": 1,
         "hidden_sizes": [128, 64],
+        "seq_covariates": True,  # feed open/promo history (spec.seq_covariates) as extra channels
     }
     search_space = {
         **TorchMLPModel.search_space,
@@ -547,25 +635,44 @@ class TorchGRUModel(TorchMLPModel):
     def input_columns(self) -> list[str]:
         return self.spec.model_columns
 
+    @property
+    def seq_channels(self) -> list[str]:
+        if not self.params.get("seq_covariates", True):
+            return []
+        return list(getattr(self.spec, "seq_covariates", []) or [])
+
     def _inputs(self, X: pd.DataFrame) -> tuple[np.ndarray, ...]:
         num, cat = self._tabular(X)
         L = int(self.params["seq_len"])
-        cols = [f"seq_{k}" for k in reversed(range(L))]  # oldest -> newest
-        seq = X[cols].to_numpy(dtype="float32")
+        steps = list(reversed(range(L)))  # oldest -> newest
+        seq = X[[f"seq_{k}" for k in steps]].to_numpy(dtype="float32")
         missing = np.isnan(seq)
         seq = np.where(missing, 0.0, np.clip(seq, 0, None))
+        covs = [
+            np.nan_to_num(X[[f"seqx_{c}_{k}" for k in steps]].to_numpy(dtype="float32"))
+            for c in self.seq_channels
+        ]
         # Per-row scale normalization; the level itself is in the tabular path (rolling means, lags).
-        scale = seq.mean(axis=1, keepdims=True) + 1.0
-        x = np.stack([np.log1p(seq / scale), missing.astype("float32")], axis=2).astype("float32")
-        return num, cat, x
+        # With an open channel the scale averages open days only, so closures don't shrink it.
+        open_col = self.spec.open_column
+        if open_col in self.seq_channels:
+            is_open = covs[self.seq_channels.index(open_col)] > 0
+            scale = (seq * is_open).sum(axis=1, keepdims=True) / np.maximum(
+                is_open.sum(axis=1, keepdims=True), 1
+            ) + 1.0
+        else:
+            scale = seq.mean(axis=1, keepdims=True) + 1.0
+        chans = [np.log1p(seq / scale), missing.astype("float32"), *covs]
+        return num, cat, np.stack(chans, axis=2).astype("float32")
 
     def _encoder(self, nn: Any) -> tuple[Any, int]:
         hidden, layers = int(self.params["gru_hidden"]), int(self.params["gru_layers"])
+        n_in = 2 + len(self.seq_channels)
 
         class SeqEncoder(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
-                self.gru = nn.GRU(input_size=2, hidden_size=hidden, num_layers=layers, batch_first=True)
+                self.gru = nn.GRU(input_size=n_in, hidden_size=hidden, num_layers=layers, batch_first=True)
 
             def forward(self, x: Any) -> Any:
                 _, h = self.gru(x)

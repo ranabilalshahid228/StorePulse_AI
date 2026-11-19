@@ -225,3 +225,56 @@ def test_closed_rule_and_log_target(tmp_path: Path) -> None:
     assert np.median(p[~closed]) > 1000  # back on the original scale, not log
     m.save(tmp_path / "m.pkl")
     np.testing.assert_allclose(ForecastModel.load(tmp_path / "m.pkl").predict(val[cols]), p)
+
+
+@pytest.mark.skipif(not TORCH, reason="torch not installed")
+@pytest.mark.parametrize("family", [ModelFamily.TORCH_MLP, ModelFamily.TORCH_GRU])
+@pytest.mark.parametrize("transform", ["log1p", "standard"])
+def test_torch_closed_rule_transforms_and_quantiles(
+    family: ModelFamily, transform: str, tmp_path: Path
+) -> None:
+    """Neural nets: exact zeros on closed days (point and P10/P50/P90), both target transforms decode
+    back to sales scale, quantile heads are ordered/non-negative, and GRU windows carry open/promo."""
+    rng = np.random.default_rng(5)
+    ds = pd.date_range("2021-01-01", periods=300)
+    frames = []
+    for store in ("1", "2", "3"):
+        open_ = (ds.dayofweek != 6).astype(float)
+        promo = (rng.random(len(ds)) < 0.4).astype(float)
+        y = open_ * (4000 + 1000 * int(store) + 1500 * promo + rng.normal(0, 200, len(ds)))
+        frames.append(
+            pd.DataFrame(
+                {"ds": ds, "store_code": store, "item_id": "", "y": y, "Open": open_, "Promo": promo}
+            )
+        )
+    df = complete_calendar(pd.concat(frames, ignore_index=True))
+    spec = FeatureSpec.from_mapping(
+        {"known_future_columns": ["Open", "Promo"], "open_column": "Open", "promo_column": "Promo"},
+        horizon=14,
+    )
+    params = {"max_epochs": 4, "target_transform": transform, "quantiles": True, "seq_len": 14}
+    spec.seq_len = FAMILIES[family].required_seq_len(params)
+    spec.seq_covariates = spec.default_seq_covariates() if spec.seq_len else []
+    f = build_features(df, spec, fit_categories=True)
+    f = f[f[f"lag_{spec.lag_offset}"].notna()]
+    cut = f["ds"].max() - pd.Timedelta(days=14)
+    tr, val = f[(f["ds"] <= cut) & (f["Open"] != 0)], f[f["ds"] > cut]
+    cols = spec.model_columns
+    m = FAMILIES[family](spec, params)
+    m.fit(tr[cols], tr["y"].to_numpy(), val[cols], val["y"].to_numpy(), lambda e, f_: None)
+    assert m.loss_kind == "mse" and m.target_transform == transform
+    assert m.num_log.any(), "sales-scale inputs (lags) should be log-compressed"
+    if family == ModelFamily.TORCH_GRU:
+        assert m.seq_channels == ["Open", "Promo"]
+    p = m.predict(val[cols])
+    q = m.predict_quantiles(val[cols])
+    closed = val["Open"].to_numpy() == 0
+    assert closed.any() and (p[closed] == 0).all()
+    assert q is not None and all((v[closed] == 0).all() and (v >= 0).all() for v in q.values())
+    assert (q[0.1] <= q[0.5]).all() and (q[0.5] <= q[0.9]).all()
+    wape = np.abs(p - val["y"].to_numpy()).sum() / val["y"].sum()
+    assert wape < 0.5, f"{family}/{transform} WAPE {wape:.3f}: not decoded back to sales scale?"
+    m.save(tmp_path / "m.pt")
+    again = ForecastModel.load(tmp_path / "m.pt")
+    np.testing.assert_allclose(again.predict(val[cols]), p, rtol=1e-5)
+    np.testing.assert_allclose(again.predict_quantiles(val[cols])[0.9], q[0.9], rtol=1e-5)
