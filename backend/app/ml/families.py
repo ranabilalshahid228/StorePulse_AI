@@ -22,7 +22,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from app.ml.features import FeatureSpec
+from app.ml.features import FeatureSpec, closed_mask
 from app.ml.metrics import QUANTILE_LEVELS, regression_metrics
 from app.models.enums import ModelFamily
 
@@ -39,6 +39,23 @@ def is_intermittent(y: np.ndarray) -> bool:
     return bool(len(y)) and float(y.min()) >= 0 and float((y == 0).mean()) > INTERMITTENT_ZERO_SHARE
 
 
+def _with_closed_rule(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Force exact zeros on rows the open flag marks closed (point forecasts and quantiles)."""
+
+    def wrapper(self: ForecastModel, X: pd.DataFrame) -> Any:
+        out = fn(self, X)
+        mask = closed_mask(self.spec, X) if out is not None else None
+        if mask is None or not mask.any():
+            return out
+        if isinstance(out, dict):
+            return {q: np.where(mask, 0.0, v) for q, v in out.items()}
+        return np.where(mask, 0.0, out)
+
+    wrapper.__wrapped__ = fn  # type: ignore[attr-defined]
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
+
+
 class ForecastModel(ABC):
     family: ClassVar[ModelFamily]
     description: ClassVar[str]
@@ -51,6 +68,13 @@ class ForecastModel(ABC):
         self.spec = spec
         self.params = {**self.default_params, **(params or {})}
         self.device = device
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for name in ("predict", "predict_quantiles"):
+            fn = cls.__dict__.get(name)
+            if fn is not None and not hasattr(fn, "__wrapped__"):
+                setattr(cls, name, _with_closed_rule(fn))
 
     @classmethod
     def is_available(cls) -> bool:
@@ -125,6 +149,7 @@ class LightGBMModel(ForecastModel):
         "objective": "auto",  # auto | regression | tweedie | poisson
         "tweedie_variance_power": 1.3,
         "quantiles": "auto",  # auto (on for intermittent targets) | true | false
+        "target_transform": "none",  # none | log1p (fit on log1p(y); good for wide-scale sales)
         "learning_rate": 0.05,
         "num_leaves": 63,
         "min_data_in_leaf": 50,
@@ -145,8 +170,10 @@ class LightGBMModel(ForecastModel):
         "objective": {"type": "categorical", "choices": ["regression", "tweedie", "poisson"]},
         "tweedie_variance_power": {"type": "float", "low": 1.05, "high": 1.9},
         "quantiles": {"type": "categorical", "choices": [False]},  # tune the point model only
+        "target_transform": {"type": "categorical", "choices": ["none", "log1p"]},
     }
     _NON_LGB = (
+        "target_transform",
         "num_boost_round",
         "early_stopping_rounds",
         "quantiles",
@@ -167,15 +194,23 @@ class LightGBMModel(ForecastModel):
 
         X, X_val = X[self.input_columns], X_val[self.input_columns]
         intermittent = is_intermittent(y)
+        self.log_target = self.params.get("target_transform", "none") == "log1p"
         objective = self.params["objective"]
         if objective == "auto":
-            objective = "tweedie" if intermittent else "regression"
+            objective = "regression" if self.log_target else ("tweedie" if intermittent else "regression")
+        if self.log_target:
+            if objective in ("tweedie", "poisson"):
+                raise ValueError("target_transform=log1p needs an L2/L1/huber objective, not " + objective)
+            y, y_val = np.log1p(np.clip(y, 0, None)), np.log1p(np.clip(y_val, 0, None))
         self.params["resolved_objective"] = objective
         want_q = self.params.get("quantiles", "auto")
         self.quantile_enabled = bool(intermittent) if want_q == "auto" else bool(want_q)
 
         rounds = int(self.params["num_boost_round"])
         es = int(self.params["early_stopping_rounds"])
+        # es <= 0: train exactly num_boost_round rounds; the validation set is only logged, never used
+        # to pick the model (keeps the reported validation score fully out-of-sample).
+        stop = [lgb.early_stopping(es, verbose=False)] if es > 0 else []
         cats = [c for c in self.spec.categorical_features if c in X.columns]
         dtrain = lgb.Dataset(X, y, categorical_feature=cats, free_raw_data=False)
         dval = lgb.Dataset(X_val, y_val, reference=dtrain)
@@ -198,7 +233,7 @@ class LightGBMModel(ForecastModel):
             num_boost_round=rounds,
             valid_sets=[dval],
             valid_names=["val"],
-            callbacks=[lgb.early_stopping(es, verbose=False), logger_for(0, "point")],
+            callbacks=[*stop, logger_for(0, "point")],
         )
         self.params["best_iteration"] = int(self.booster.best_iteration or rounds)
 
@@ -212,11 +247,16 @@ class LightGBMModel(ForecastModel):
                     num_boost_round=rounds,
                     valid_sets=[dval],
                     valid_names=["val"],
-                    callbacks=[lgb.early_stopping(es, verbose=False), logger_for(i, f"p{round(q * 100)}")],
+                    callbacks=[*stop, logger_for(i, f"p{round(q * 100)}")],
                 )
 
+    def _inverse(self, z: np.ndarray) -> np.ndarray:
+        return np.expm1(z) if getattr(self, "log_target", False) else z
+
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return self.booster.predict(X[self.input_columns], num_iteration=self.booster.best_iteration)
+        return self._inverse(
+            self.booster.predict(X[self.input_columns], num_iteration=self.booster.best_iteration)
+        )
 
     def predict_quantiles(self, X: pd.DataFrame) -> dict[float, np.ndarray] | None:
         if not getattr(self, "q_boosters", None):
@@ -224,7 +264,7 @@ class LightGBMModel(ForecastModel):
         Xi = X[self.input_columns]
         raw = np.column_stack(
             [
-                np.clip(b.predict(Xi, num_iteration=b.best_iteration), 0, None)
+                np.clip(self._inverse(b.predict(Xi, num_iteration=b.best_iteration)), 0, None)
                 for b in self.q_boosters.values()
             ]
         )

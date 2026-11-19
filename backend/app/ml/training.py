@@ -73,7 +73,7 @@ def prepare_data(
     raw = load_history(parquet_path, store_code)
     if history_days:
         spec_probe = FeatureSpec.from_mapping(mapping, horizon)
-        keep = history_days + spec_probe.lag_offset + max(max(LAG_STEPS), seq_len, 91) + 28
+        keep = history_days + spec_probe.lag_offset + max(max(LAG_STEPS), seq_len, 91, 371) + 28
         raw = raw[raw["ds"] > raw["ds"].max() - pd.Timedelta(days=keep)]
     present = set(raw["store_code"].astype(str).unique())
     spec = FeatureSpec.from_mapping(
@@ -87,6 +87,9 @@ def prepare_data(
     if history_days:
         usable = usable[usable["ds"] > feats["ds"].max() - pd.Timedelta(days=history_days)]
     tr = usable[usable["ds"] <= cutoff]
+    if spec.open_column and spec.zero_when_closed and spec.open_column in tr:
+        # Closed days are forecast as exactly 0 by rule, so the model only learns open-day demand.
+        tr = tr[tr[spec.open_column].fillna(1) != 0]
     val = usable[usable["ds"] > cutoff]
     if len(tr) < 100 or len(val) < 7:
         raise ValueError(
@@ -107,6 +110,27 @@ def prepare_data(
         spec,
         val_scale=val_scale,
     )
+
+
+def inner_split(data: PreparedData, days: int) -> PreparedData:
+    """Hold out the last `days` days of the *training* period for hyperparameter search, so the final
+    validation window is never seen during tuning. Leak-free: target features lag by >= horizon."""
+    X = data.X_tr
+    dates = pd.to_datetime(
+        (X["year"].astype(int) * 1000 + X["dayofyear"].astype(int)).astype(str), format="%Y%j"
+    )
+    val = (dates > dates.max() - pd.Timedelta(days=days)).to_numpy()
+    if val.sum() < 7 or (~val).sum() < 100:
+        raise ValueError("Not enough training history for an inner tuning split")
+    frame = pd.DataFrame(
+        {
+            "ds": dates[val].to_numpy(),
+            "store_code": X.loc[val, "store_code"].astype(str).to_numpy(),
+            "item_id": X.loc[val, "item_id"].astype(str).to_numpy(),
+            "y": data.y_tr[val],
+        }
+    )
+    return PreparedData(X[~val], data.y_tr[~val], X[val], data.y_tr[val], frame, data.spec)
 
 
 def _fit_once(
@@ -303,10 +327,17 @@ def tune(
     trials: list[dict[str, Any]] = []
     tune_progress = progress.sub(0.08, 0.85)
 
+    # Honest tuning: trials are scored on an inner split of the training period; the final validation
+    # window is only used once, to report the tuned model.
+    inner = inner_split(data, validation_days)
+    best_rounds: dict[int, int] = {}
+
     def objective(trial: optuna.Trial) -> float:
         params = {**base_params, **suggest_params(trial, search_space)}
-        _, _, preds = _fit_once(family, data, params, device, None)
-        m = data.metrics(preds)
+        model_t, _, preds = _fit_once(family, inner, params, device, None)
+        if "best_iteration" in model_t.params:
+            best_rounds[trial.number] = int(model_t.params["best_iteration"])
+        m = inner.metrics(preds)
         value = m.get(metric)
         if value is None:
             raise optuna.TrialPruned(f"metric {metric} undefined")
@@ -339,6 +370,14 @@ def tune(
         raise RuntimeError("No Optuna trial completed successfully")
 
     best_params = {**base_params, **study.best_params}
+    if study.best_trial.number in best_rounds:
+        # GBDT: fix the round count found on the inner split (scaled to the larger training set) and
+        # disable early stopping, so the final validation score is fully out-of-sample.
+        scale = len(data.X_tr) / max(len(inner.X_tr), 1)
+        best_params |= {
+            "num_boost_round": max(1, round(best_rounds[study.best_trial.number] * scale)),
+            "early_stopping_rounds": 0,
+        }
     progress.update(0.86, "training_best", force=True)
     model, logs, preds = _fit_once(family, data, best_params, device, progress.sub(0.86, 0.93))
     result = _finalize(
@@ -351,6 +390,11 @@ def tune(
         logs=logs,
         progress=progress.sub(0.93, 1.0),
     )
+    result["metrics"]["tuning"] = {
+        "scheme": "inner split of the training period",
+        "inner_validation_days": validation_days,
+        "inner_best_value": float(study.best_value),
+    }
     result["metrics"]["best_trial"] = {
         "number": study.best_trial.number,
         "value": study.best_value,

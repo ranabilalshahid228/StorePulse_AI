@@ -85,7 +85,7 @@ def run_forecast(
     history = complete_calendar(load_history(parquet_path, scope_store_code))
     # Only the trailing window is needed for lag/rolling features.
     # Longest look-back: 364-day trailing price max (and 91-day intermittency / seq windows).
-    keep_days = spec.lag_offset + max(max(LAG_STEPS), spec.seq_len, 364) + 35
+    keep_days = spec.lag_offset + max(max(LAG_STEPS), spec.seq_len, 371) + 35
     history = history[history["ds"] > history["ds"].max() - pd.Timedelta(days=keep_days + horizon)]
 
     progress.update(0.25, "building_future_frame", force=True)

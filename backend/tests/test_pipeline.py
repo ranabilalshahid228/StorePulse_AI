@@ -114,3 +114,44 @@ def test_train_and_forecast(canonical: Path, family: ModelFamily, progress, tmp_
     if family == ModelFamily.LIGHTGBM:
         impact = summary["event_impact"]["promo-week"]
         assert impact["uplift"] > 0, "promo override should raise forecast sales"
+
+
+def test_tune_scores_trials_on_inner_split(canonical: Path, progress, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """Optuna trials must never see the final validation window; the tuned GBDT trains a fixed
+    number of rounds without early stopping on it."""
+    import uuid
+
+    from app.ml import training
+    from app.services.storage import LocalStorage
+
+    monkeypatch.setattr(training, "get_storage", lambda: LocalStorage(str(tmp_path)))
+    seen: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    real_fit = training._fit_once
+
+    def spy(family, data, params, device, prog):  # noqa: ANN001, ANN202
+        yd = data.X_val["year"].astype(int) * 1000 + data.X_val["dayofyear"].astype(int)
+        d = pd.to_datetime(yd.astype(str), format="%Y%j")
+        seen.append((d.min(), d.max()))
+        return real_fit(family, data, params, device, prog)
+
+    monkeypatch.setattr(training, "_fit_once", spy)
+    result = training.tune(
+        org_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        parquet_path=canonical,
+        mapping=rossmann_mapping(),
+        family=ModelFamily.LIGHTGBM,
+        base_params={"num_boost_round": 150, "quantiles": False},
+        search_space={"num_leaves": {"type": "int", "low": 15, "high": 63}},
+        n_trials=2,
+        timeout_s=None,
+        metric="wape",
+        horizon=HORIZON,
+        validation_days=HORIZON,
+        store_code=None,
+        progress=progress,
+    )
+    final_start = seen[-1][0]
+    assert len(seen) == 3 and all(hi < final_start for _, hi in seen[:-1])  # trials never saw final window
+    assert result["hyperparameters"]["early_stopping_rounds"] == 0
+    assert result["metrics"]["tuning"]["scheme"].startswith("inner split")

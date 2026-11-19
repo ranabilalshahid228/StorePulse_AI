@@ -30,7 +30,13 @@ import pandas as pd  # noqa: E402
 
 from app.ml.families import FAMILIES, ForecastModel  # noqa: E402
 from app.ml.forecasting import run_forecast  # noqa: E402
-from app.ml.training import _fit_once, evaluate_model, prepare_data  # noqa: E402
+from app.ml.training import (  # noqa: E402
+    PreparedData,
+    _fit_once,
+    evaluate_model,
+    inner_split,
+    prepare_data,
+)
 from app.models.enums import ModelFamily  # noqa: E402
 from app.schemas.dataset import JoinSpec, SchemaMapping  # noqa: E402
 from app.services.diagnostics import compute_health_report  # noqa: E402
@@ -52,6 +58,63 @@ class ConsoleProgress:
 
     def sub(self, lo: float, hi: float) -> ConsoleProgress:
         return self
+
+
+# ----------------------------------------------------------------------------------------
+# Honest tuning: Optuna sees only an inner split of the *training* period
+# ----------------------------------------------------------------------------------------
+
+TUNE_SPACE = {
+    "learning_rate": {"type": "float", "low": 0.02, "high": 0.1, "log": True},
+    "num_leaves": {"type": "int", "low": 31, "high": 511, "log": True},
+    "min_data_in_leaf": {"type": "int", "low": 10, "high": 300, "log": True},
+    "feature_fraction": {"type": "float", "low": 0.4, "high": 1.0},
+    "bagging_fraction": {"type": "float", "low": 0.6, "high": 1.0},
+    "lambda_l2": {"type": "float", "low": 1e-3, "high": 30.0, "log": True},
+    "min_gain_to_split": {"type": "float", "low": 0.0, "high": 1.0},
+}
+
+
+def tune_lightgbm(data: PreparedData, base: dict[str, Any], n_trials: int, days: int) -> dict[str, Any]:
+    import optuna
+
+    from app.ml.families import suggest_params
+
+    inner = inner_split(data, days)
+    print(
+        f"    tuning on inner split: {len(inner.X_tr):,} train / {len(inner.X_val):,} val rows,"
+        f" {n_trials} trials"
+    )
+    best_rounds: dict[int, int] = {}
+
+    def objective(trial: optuna.Trial) -> float:
+        params = {
+            **base,
+            **suggest_params(trial, TUNE_SPACE),
+            "quantiles": False,
+            "early_stopping_rounds": 100,
+        }
+        model, _, preds = _fit_once(ModelFamily.LIGHTGBM, inner, params, "cpu", None)
+        best_rounds[trial.number] = int(model.params["best_iteration"])
+        wape = inner.metrics(preds)["wape"]
+        print(
+            f"      trial {trial.number:>2}: inner ACC {100 * (1 - wape):.2f}%"
+            f"  rounds {best_rounds[trial.number]}  "
+            f"{ {k: round(v, 4) if isinstance(v, float) else v for k, v in trial.params.items()} }",
+            flush=True,
+        )
+        return float(wape)
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
+    study.optimize(objective, n_trials=n_trials)
+    rounds = best_rounds[study.best_trial.number]
+    # Final model: fixed round count (scaled for the extra `days` of data), no early stopping on the
+    # final validation window -> the reported validation score stays fully out-of-sample.
+    n_train = len(inner.X_tr)
+    final_rounds = int(round(rounds * (n_train + len(inner.X_val)) / n_train))
+    print(f"    best inner ACC {100 * (1 - study.best_value):.2f}% -> final model {final_rounds} rounds")
+    return {**base, **study.best_params, "num_boost_round": final_rounds, "early_stopping_rounds": 0}
 
 
 # ----------------------------------------------------------------------------------------
@@ -147,12 +210,27 @@ def main() -> int:
         choices=[f.value for f in ModelFamily],
     )
     ap.add_argument("--horizon", type=int)
+    ap.add_argument("--validation-days", type=int, help="validation window (default = horizon)")
     ap.add_argument("--history-days", type=int)
     ap.add_argument("--no-store-features", action="store_true")
     ap.add_argument("--lgb-rounds", type=int, default=1000)
     ap.add_argument("--torch-epochs", type=int, default=8)
     ap.add_argument("--lgb-objective", default="auto", choices=["auto", "regression", "tweedie", "poisson"])
     ap.add_argument("--quantiles", default="auto", choices=["auto", "true", "false"])
+    ap.add_argument(
+        "--lgb-param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help='extra LightGBM param, JSON-parsed value (repeatable), e.g. target_transform="log1p"',
+    )
+    ap.add_argument(
+        "--tune",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Optuna-tune LightGBM for N trials on an inner split of the training period",
+    )
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
@@ -195,7 +273,7 @@ def main() -> int:
             canon,
             mapping.model_dump(mode="json"),
             horizon,
-            horizon,
+            args.validation_days or horizon,
             None,
             history_days=args.history_days,
             store_static=None if args.no_store_features else cfg["store_static"],
@@ -228,6 +306,15 @@ def main() -> int:
                 "objective": args.lgb_objective,
                 "quantiles": quantiles,
             }
+            for kv in args.lgb_param:
+                key, _, val = kv.partition("=")
+                try:
+                    lgb_params[key] = json.loads(val)
+                except json.JSONDecodeError:
+                    lgb_params[key] = val
+            if args.tune and family == ModelFamily.LIGHTGBM:
+                lgb_params = tune_lightgbm(data, lgb_params, args.tune, horizon)
+                summary["tuned_params"] = lgb_params
             nn_params = {"max_epochs": args.torch_epochs}
             params: dict[str, Any] = {
                 ModelFamily.LIGHTGBM: lgb_params,
@@ -288,7 +375,8 @@ def main() -> int:
 
             cov = fmt(interval.get("coverage")) if interval else "n/a"
             print(
-                f"    {fam:<15} WAPE {fmt(m['wape'])}  RMSSE {fmt(m['rmsse'])}  RMSE {fmt(m['rmse'])}  "
+                f"    {fam:<15} ACC {100 * (1 - m['wape']):.2f}%  WAPE {fmt(m['wape'])}"
+                f"  RMSSE {fmt(m['rmsse'])}  RMSE {fmt(m['rmse'])}  "
                 f"R2 {fmt(m['r2'])}  RMSPE {fmt(m['rmspe'])}  P10-P90 cov {cov}  fit {fit_s:.0f}s"
             )
             if m.get("ensemble"):

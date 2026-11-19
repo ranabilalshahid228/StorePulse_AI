@@ -142,7 +142,8 @@ def workforce_plan(days: pd.DataFrame, p: FinanceInputs) -> tuple[pd.DataFrame, 
         )
     assumptions = [
         note,
-        f"{shifts} shift(s)/day = ceil({p.operating_hours_per_day:g} operating h / {p.shift_hours:g} h shifts).",
+        f"{shifts} shift(s)/day = ceil({p.operating_hours_per_day:g} operating h"
+        f" / {p.shift_hours:g} h shifts).",
         f"Required staff-hours = footfall / {p.customers_per_staff_hour:g} customers per staff-hour.",
         f"Staff per shift = max({p.min_staff_per_shift}, ceil(required hours / (shifts x shift hours))).",
         f"Labour cost = scheduled hours x {p.hourly_wage:.2f} hourly wage.",

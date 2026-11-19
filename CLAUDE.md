@@ -182,7 +182,15 @@ cd backend
 python -m scripts.run_pipeline rossmann                          # all 1,115 stores
 python -m scripts.run_pipeline m5 --stores CA_1 --history-days 730 --out m5.json
 python -m scripts.run_pipeline rossmann --stores 1 2 3 --families lightgbm --no-store-features
+python -m scripts.run_pipeline rossmann --families lightgbm --lgb-rounds 4000 --tune 25   # honest Optuna
 ```
+Other flags: `--horizon`, `--validation-days` (compare horizons on the same window), `--lgb-objective`,
+`--quantiles`, `--lgb-param KEY=VALUE` (JSON value, repeatable). Each line prints `ACC` = 1 − WAPE.
+
+Reference results (Rossmann, all 1,115 stores, horizon 42, last 42 days held out, LightGBM):
+default params **91.52 %** (WAPE 0.0848, RMSPE 0.1245, R² 0.954); 25-trial tuning **91.77 %**
+(WAPE 0.0823). Tried and rejected: log1p target (91.36 %), L1 objective (91.29 %), shorter horizons
+(14 d: 90.54 % on the same window). M5 CA_1 item-level is a different problem (WAPE ≈ 0.73).
 
 ## Background jobs & progress
 
@@ -219,8 +227,19 @@ python -m scripts.run_pipeline rossmann --stores 1 2 3 --families lightgbm --no-
     stores when each store is one series (Rossmann). Forecasts load the model's training scope so
     aggregates match training, then filter output to the requested store.
   - store metadata (Rossmann `store.csv`), known-future covariates, categorical ids
+  - seasonal / conditional (`_seasonal_and_conditional`): same-weekday 13-week mean, `lag_364`,
+    15-day mean around last year's date, rolling mean over open days only, and 91-day mean target on
+    promo vs non-promo days + their lift
   - `seq_0..seq_{L-1}`: target window ending at the lag origin, only when a sequence model needs it
+- **Closed-day rule** (`spec.zero_when_closed`, default on, needs `open_column`): closed days are dropped
+  from training and every family's `predict`/`predict_quantiles` returns exactly 0 where Open == 0
+  (`_with_closed_rule`, applied via `ForecastModel.__init_subclass__`).
 - Training options per run (`training_config`): `history_days`, `use_store_features`.
+- **Honest tuning** (`training.tune`): Optuna trials are scored on `inner_split` — the last
+  `validation_days` of the *training* period — never on the reported validation window. For GBDT the
+  best trial's round count is scaled to the full training set and fixed (`early_stopping_rounds=0`), so
+  the final validation metrics stay out-of-sample; `metrics.tuning` records the scheme. LightGBM also
+  accepts `target_transform="log1p"` and `early_stopping_rounds<=0` (disable).
 - Validation = last `validation_days` (default = horizon). Metrics (`ml/metrics.py`): MAE, RMSE, WAPE,
   RMSSE (M5 definition: per-series RMSE scaled by the training-period one-step naive error, averaged
   over series), R², MAPE, sMAPE, RMSPE (Rossmann), bias. Tune on any of wape/rmse/mae/rmspe/rmsse.

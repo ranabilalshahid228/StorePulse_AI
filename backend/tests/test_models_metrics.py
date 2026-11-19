@@ -95,7 +95,9 @@ def test_target_features_are_leak_free() -> None:
     target_cols = [
         c
         for c in spec.model_columns
-        if c.startswith(("lag_", "roll_", "dow_mean", "nz_", "days_since_sale", "agg_", "seq_"))
+        if c.startswith(
+            ("lag_", "roll_", "dow_mean", "nz_", "days_since_sale", "agg_", "seq_", "yoy_", "tgt_")
+        )
     ]
     assert {"nz_rate_28", "days_since_sale", "agg_store_code", "agg_store_code_dept", "seq_0"} <= set(
         target_cols
@@ -187,3 +189,39 @@ def test_ensemble_weights_comparison_and_pickle(prepared: PreparedData, tmp_path
     p = m.predict(prepared.X_val)
     m.save(tmp_path / "e.pkl")  # torch member must survive pickling
     np.testing.assert_allclose(ForecastModel.load(tmp_path / "e.pkl").predict(prepared.X_val), p, rtol=1e-5)
+
+
+def test_closed_rule_and_log_target(tmp_path: Path) -> None:
+    """Closed days (open flag = 0) are excluded from training and forecast as exactly 0;
+    target_transform=log1p trains on log scale and predicts on the original scale."""
+    rng = np.random.default_rng(3)
+    ds = pd.date_range("2021-01-01", periods=300)
+    frames = []
+    for store in ("1", "2"):
+        open_ = (ds.dayofweek != 6).astype(float)
+        promo = (rng.random(len(ds)) < 0.4).astype(float)
+        y = open_ * (5000 + 1500 * promo + rng.normal(0, 200, len(ds)))
+        frames.append(
+            pd.DataFrame(
+                {"ds": ds, "store_code": store, "item_id": "", "y": y, "Open": open_, "Promo": promo}
+            )
+        )
+    df = complete_calendar(pd.concat(frames, ignore_index=True))
+    spec = FeatureSpec.from_mapping(
+        {"known_future_columns": ["Open", "Promo"], "open_column": "Open", "promo_column": "Promo"},
+        horizon=14,
+    )
+    f = build_features(df, spec, fit_categories=True)
+    f = f[f[f"lag_{spec.lag_offset}"].notna()]
+    assert {"roll_mean_open_28", "tgt_promo_lift_91", "dow_mean_13w"} <= set(spec.feature_columns)
+    cut = f["ds"].max() - pd.Timedelta(days=14)
+    tr, val = f[(f["ds"] <= cut) & (f["Open"] != 0)], f[f["ds"] > cut]
+    cols = spec.model_columns
+    m = FAMILIES[ModelFamily.LIGHTGBM](spec, {"num_boost_round": 80, "target_transform": "log1p"})
+    m.fit(tr[cols], tr["y"].to_numpy(), val[cols], val["y"].to_numpy(), lambda e, f_: None)
+    p = m.predict(val[cols])
+    closed = val["Open"].to_numpy() == 0
+    assert closed.any() and (p[closed] == 0).all()
+    assert np.median(p[~closed]) > 1000  # back on the original scale, not log
+    m.save(tmp_path / "m.pkl")
+    np.testing.assert_allclose(ForecastModel.load(tmp_path / "m.pkl").predict(val[cols]), p)

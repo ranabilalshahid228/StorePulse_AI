@@ -70,6 +70,8 @@ class FeatureSpec:
     agg_groups: list[list[str]] = field(default_factory=list)
     # >0 adds seq_0..seq_{n-1} (target window ending at the lag origin) for sequence models.
     seq_len: int = 0
+    # With an open flag: train only on open days and predict exactly 0 when the store is closed.
+    zero_when_closed: bool = True
     # store_code -> Store attributes (store_type, assortment, competition_*, promo2_*), frozen at train time
     store_static: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -267,6 +269,7 @@ def build_features(df: pd.DataFrame, spec: FeatureSpec, *, fit_categories: bool)
     out["dow_mean_4w"] = out[[f"lag_{o}", f"lag_{o + 7}", f"lag_{o + 14}", f"lag_{o + 21}"]].mean(axis=1)
     dyn += ["roll_std_28", "roll_zero_share_28", "dow_mean_4w"]
     dyn += _intermittency(out, shifted, gid)
+    dyn += _seasonal_and_conditional(out, y, gid, spec)
     for k in range(spec.seq_len):
         out[f"seq_{k}"] = shifted_by.shift(o + k)
 
@@ -348,6 +351,64 @@ def _intermittency(out: pd.DataFrame, shifted: pd.Series, gid: np.ndarray) -> li
     # No sale yet in an observed window -> cap; before any observation -> NaN.
     out["days_since_sale"] = days.fillna(365).clip(upper=365).where(observed).astype("float32")
     return ["nz_rate_28", "nz_rate_91", "nz_size_91", "days_since_sale"]
+
+
+def _seasonal_and_conditional(
+    out: pd.DataFrame, y: pd.Series, gid: np.ndarray, spec: FeatureSpec
+) -> list[str]:
+    """Longer-memory target features, all anchored at or before the lag origin (t - lag_offset):
+
+    * same-weekday mean over 13 aligned weeks (quarterly weekday profile)
+    * last year: same weekday 52 weeks ago and a 15-day mean centred on it (holiday/seasonal effects)
+    * open-days-only 28-day mean (closures no longer drag the level down)
+    * promo / non-promo mean demand over the last 91 days (promo lift per series)
+    """
+    o = spec.lag_offset
+    by = y.groupby(gid, sort=False)
+    cols: list[str] = []
+    weekly = np.column_stack([by.shift(o + 7 * k).to_numpy() for k in range(13)])
+    with np.errstate(invalid="ignore"):
+        out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+    cols.append("dow_mean_13w")
+    if o <= 357:
+        out["lag_364"] = by.shift(364).astype("float32")
+        out["yoy_mean_15"] = _rolling(by.shift(357), gid, 15, "mean", 7).astype("float32")
+        cols += ["lag_364", "yoy_mean_15"]
+
+    shifted = by.shift(o)
+    open_sh = None
+    if spec.open_column and spec.open_column in out:
+        open_sh = (out[spec.open_column].fillna(1) > 0).astype("float32").groupby(gid, sort=False).shift(o)
+        w = open_sh.where(shifted.notna())
+        num = _rolling((shifted * w).fillna(0), gid, 28, "sum", 7)
+        den = _rolling(w.fillna(0), gid, 28, "sum", 7)
+        out["roll_mean_open_28"] = (num / den.where(den > 0)).astype("float32")
+        cols.append("roll_mean_open_28")
+    if spec.promo_column and spec.promo_column in out:
+        promo_sh = (out[spec.promo_column].fillna(0) > 0).astype("float32").groupby(gid, sort=False).shift(o)
+        base = open_sh if open_sh is not None else pd.Series(1.0, index=out.index)
+        for name, w in (
+            ("tgt_promo_mean_91", promo_sh * base),
+            ("tgt_nopromo_mean_91", (1 - promo_sh) * base),
+        ):
+            w = w.where(shifted.notna())
+            num = _rolling((shifted * w).fillna(0), gid, 91, "sum", 7)
+            den = _rolling(w.fillna(0), gid, 91, "sum", 7)
+            out[name] = (num / den.where(den > 0)).astype("float32")
+            cols.append(name)
+        out["tgt_promo_lift_91"] = (
+            out["tgt_promo_mean_91"] / out["tgt_nopromo_mean_91"].where(out["tgt_nopromo_mean_91"] > 0)
+        ).astype("float32")
+        cols.append("tgt_promo_lift_91")
+    return cols
+
+
+def closed_mask(spec: FeatureSpec, X: pd.DataFrame) -> np.ndarray | None:
+    """Rows where the (known-future) open flag says the store is closed, if the rule applies."""
+    col = spec.open_column
+    if not col or not getattr(spec, "zero_when_closed", False) or col not in X.columns:
+        return None
+    return pd.to_numeric(X[col], errors="coerce").to_numpy() == 0
 
 
 def _run_length(flag: pd.Series, gid: np.ndarray) -> pd.Series:
