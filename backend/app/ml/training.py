@@ -1,0 +1,272 @@
+"""Training & Optuna tuning pipelines (run inside Celery workers)."""
+
+from __future__ import annotations
+
+import logging
+import tempfile
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from app.core.config import get_settings
+from app.ml import plots
+from app.ml.data import load_history
+from app.ml.families import FAMILIES, ForecastModel, resolve_device, suggest_params
+from app.ml.features import FeatureSpec, build_features, complete_calendar, training_mask
+from app.ml.metrics import empirical_interval, regression_metrics
+from app.models.enums import ModelFamily
+from app.services.storage import ArtifactKeys, get_storage
+from app.workers.progress import ProgressReporter
+
+logger = logging.getLogger(__name__)
+
+
+class PreparedData:
+    def __init__(
+        self,
+        X_tr: pd.DataFrame,
+        y_tr: np.ndarray,
+        X_val: pd.DataFrame,
+        y_val: np.ndarray,
+        val_frame: pd.DataFrame,
+        spec: FeatureSpec,
+    ) -> None:
+        self.X_tr, self.y_tr, self.X_val, self.y_val = X_tr, y_tr, X_val, y_val
+        self.val_frame = val_frame
+        self.spec = spec
+
+
+def prepare_data(
+    parquet_path: Path, mapping: dict[str, Any], horizon: int, validation_days: int, store_code: str | None
+) -> PreparedData:
+    raw = load_history(parquet_path, store_code)
+    spec = FeatureSpec.from_mapping(mapping, horizon)
+    full = complete_calendar(raw)
+    feats = build_features(full, spec, fit_categories=True)
+    cutoff = feats["ds"].max() - pd.Timedelta(days=validation_days)
+    usable = feats[training_mask(feats, spec)]
+    tr = usable[usable["ds"] <= cutoff]
+    val = usable[usable["ds"] > cutoff]
+    if len(tr) < 100 or len(val) < 7:
+        raise ValueError(
+            f"Not enough history: {len(tr)} train rows / {len(val)} validation rows "
+            f"(need >= 100 / 7). Reduce horizon or validation_days."
+        )
+    cols = spec.feature_columns
+    return PreparedData(
+        tr[cols],
+        tr["y"].to_numpy("float64"),
+        val[cols],
+        val["y"].to_numpy("float64"),
+        val[["ds", "store_code", "item_id", "y"]].copy(),
+        spec,
+    )
+
+
+def _fit_once(
+    family: ModelFamily,
+    data: PreparedData,
+    params: dict[str, Any],
+    device: str,
+    progress: ProgressReporter | None,
+) -> tuple[ForecastModel, list[dict[str, Any]], np.ndarray]:
+    model = FAMILIES[family](data.spec, params, device=device)
+    logs: list[dict[str, Any]] = []
+
+    def on_epoch(entry: dict[str, Any], frac: float) -> None:
+        logs.append(entry)
+        if progress:
+            progress.update(frac, "training", message=f"epoch {entry.get('epoch')}")
+
+    model.fit(data.X_tr, data.y_tr, data.X_val, data.y_val, on_epoch)
+    preds = np.clip(model.predict(data.X_val), 0, None)
+    return model, logs, preds
+
+
+def _benchmark_inference(model: ForecastModel, X: pd.DataFrame) -> float:
+    """Median latency in ms per 1,000 rows over 3 runs."""
+    sample = X.iloc[: min(len(X), 20_000)]
+    timings = []
+    for _ in range(3):
+        t0 = time.perf_counter()
+        model.predict(sample)
+        timings.append((time.perf_counter() - t0) * 1000)
+    return float(np.median(timings) / max(len(sample), 1) * 1000)
+
+
+def _finalize(
+    *,
+    org_id: uuid.UUID,
+    run_id: uuid.UUID,
+    family: ModelFamily,
+    model: ForecastModel,
+    data: PreparedData,
+    preds: np.ndarray,
+    logs: list[dict[str, Any]],
+    progress: ProgressReporter,
+) -> dict[str, Any]:
+    storage = get_storage()
+    metrics = regression_metrics(data.y_val, preds)
+    interval = empirical_interval(data.y_val, preds)
+    if interval:
+        metrics["interval"] = interval
+    metrics["validation_start"] = data.val_frame["ds"].min().date().isoformat()
+    metrics["validation_end"] = data.val_frame["ds"].max().date().isoformat()
+
+    progress.update(0.3, "benchmarking", force=True)
+    inference_ms = _benchmark_inference(model, data.X_val)
+
+    progress.update(0.5, "plotting", force=True)
+    plot_keys: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        val = data.val_frame.assign(yhat=preds)
+        rendered = {
+            "validation_actual_vs_forecast": plots.actual_vs_forecast(val, tmpdir / "avf.png"),
+            "learning_curve": plots.learning_curve(logs, tmpdir / "lc.png"),
+        }
+        importance = model.feature_importance()
+        if importance:
+            rendered["feature_importance"] = plots.feature_importance(importance, tmpdir / "fi.png")
+            metrics["feature_importance"] = dict(sorted(importance.items(), key=lambda kv: -kv[1])[:25])
+        for name, path in rendered.items():
+            if path is not None:
+                key = ArtifactKeys.model_plot(org_id, run_id, name)
+                storage.put_file(key, path)
+                plot_keys.append(key)
+
+        progress.update(0.8, "saving_artifact", force=True)
+        art_key = ArtifactKeys.model_artifact(org_id, run_id, model.artifact_ext)
+        local = tmpdir / f"model.{model.artifact_ext}"
+        model.save(local)
+        storage.put_file(art_key, local)
+
+    return {
+        "metrics": metrics,
+        "epoch_logs": logs,
+        "artifact_path": art_key,
+        "plot_paths": plot_keys,
+        "inference_ms": inference_ms,
+        "train_rows": int(len(data.X_tr)),
+        "feature_columns": data.spec.feature_columns,
+        "hyperparameters": model.params,
+    }
+
+
+def train(
+    *,
+    org_id: uuid.UUID,
+    run_id: uuid.UUID,
+    parquet_path: Path,
+    mapping: dict[str, Any],
+    family: ModelFamily,
+    params: dict[str, Any],
+    horizon: int,
+    validation_days: int,
+    store_code: str | None,
+    progress: ProgressReporter,
+) -> dict[str, Any]:
+    progress.update(0.02, "loading_data", force=True)
+    data = prepare_data(parquet_path, mapping, horizon, validation_days, store_code)
+    device = resolve_device(get_settings().training_device, FAMILIES[family])
+    progress.update(0.1, "training", message=f"device={device}", force=True)
+    model, logs, preds = _fit_once(family, data, params, device, progress.sub(0.1, 0.85))
+    result = _finalize(
+        org_id=org_id,
+        run_id=run_id,
+        family=family,
+        model=model,
+        data=data,
+        preds=preds,
+        logs=logs,
+        progress=progress.sub(0.85, 1.0),
+    )
+    result["device"] = device
+    return result
+
+
+def tune(
+    *,
+    org_id: uuid.UUID,
+    run_id: uuid.UUID,
+    parquet_path: Path,
+    mapping: dict[str, Any],
+    family: ModelFamily,
+    base_params: dict[str, Any],
+    search_space: dict[str, Any],
+    n_trials: int,
+    timeout_s: int | None,
+    metric: str,
+    horizon: int,
+    validation_days: int,
+    store_code: str | None,
+    progress: ProgressReporter,
+) -> dict[str, Any]:
+    import optuna
+
+    progress.update(0.02, "loading_data", force=True)
+    data = prepare_data(parquet_path, mapping, horizon, validation_days, store_code)
+    device = resolve_device(get_settings().training_device, FAMILIES[family])
+    trials: list[dict[str, Any]] = []
+    tune_progress = progress.sub(0.08, 0.85)
+
+    def objective(trial: optuna.Trial) -> float:
+        params = {**base_params, **suggest_params(trial, search_space)}
+        _, _, preds = _fit_once(family, data, params, device, None)
+        m = regression_metrics(data.y_val, preds)
+        value = m.get(metric)
+        if value is None:
+            raise optuna.TrialPruned(f"metric {metric} undefined")
+        trials.append(
+            {
+                "number": trial.number,
+                "params": params,
+                "value": float(value),
+                "metrics": {k: v for k, v in m.items() if k != "n"},
+            }
+        )
+        tune_progress.update(
+            (trial.number + 1) / n_trials,
+            "tuning",
+            message=f"trial {trial.number + 1}/{n_trials} {metric}={value:.4f}",
+            force=True,
+        )
+        return float(value)
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+        study_name=f"run-{run_id}",
+        storage=get_settings().optuna_storage_url,
+        load_if_exists=True,
+    )
+    study.optimize(objective, n_trials=n_trials, timeout=timeout_s, catch=(ValueError,))
+    if not study.best_trials:
+        raise RuntimeError("No Optuna trial completed successfully")
+
+    best_params = {**base_params, **study.best_params}
+    progress.update(0.86, "training_best", force=True)
+    model, logs, preds = _fit_once(family, data, best_params, device, progress.sub(0.86, 0.93))
+    result = _finalize(
+        org_id=org_id,
+        run_id=run_id,
+        family=family,
+        model=model,
+        data=data,
+        preds=preds,
+        logs=logs,
+        progress=progress.sub(0.93, 1.0),
+    )
+    result["metrics"]["best_trial"] = {
+        "number": study.best_trial.number,
+        "value": study.best_value,
+        "metric": metric,
+    }
+    result["trials"] = trials
+    result["device"] = device
+    return result

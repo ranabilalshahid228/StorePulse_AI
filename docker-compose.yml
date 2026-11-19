@@ -1,0 +1,125 @@
+# StorePulse AI - local stack.
+#   docker compose up --build                 # postgres, redis, backend, worker, frontend
+#   docker compose --profile gpu up --build   # + CUDA training worker
+#   docker compose --profile s3 up --build    # + MinIO (set STORAGE_BACKEND=s3 in .env)
+
+x-backend-env: &backend-env
+  env_file: .env
+  environment:
+    POSTGRES_HOST: postgres
+    REDIS_URL: redis://redis:6379/0
+    STORAGE_LOCAL_ROOT: /data/storage
+    STORAGE_CACHE_DIR: /data/storage/.cache
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-storepulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-storepulse}
+      POSTGRES_DB: ${POSTGRES_DB:-storepulse}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    <<: *backend-env
+    volumes: [artifacts:/data/storage]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  celery-worker:
+    build: ./backend
+    <<: *backend-env
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "ingestion,training,forecasting",
+              "-c", "${CELERY_CONCURRENCY:-2}", "-n", "cpu@%h", "--loglevel=INFO"]
+    volumes: [artifacts:/data/storage]
+    depends_on:
+      backend: { condition: service_healthy }  # migrations have run
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d cpu@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+
+  celery-worker-gpu:
+    profiles: [gpu]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    <<: *backend-env
+    volumes: [artifacts:/data/storage]
+    depends_on:
+      backend: { condition: service_healthy }
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d gpu@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+    ports: ["3000:3000"]
+    depends_on:
+      backend: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/login"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio:
+    profiles: [s3]
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+    volumes: [miniodata:/data]
+    ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
+  artifacts:
+  miniodata:

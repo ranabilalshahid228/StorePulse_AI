@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+# GPU Celery worker for the `training` queue (torch_mlp on CUDA). Requires the NVIDIA Container Toolkit.
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends software-properties-common libgomp1 curl \
+ && add-apt-repository ppa:deadsnakes/ppa -y \
+ && apt-get install -y --no-install-recommends python3.12 python3.12-venv \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+COPY pyproject.toml ./
+RUN mkdir -p app && touch app/__init__.py \
+ && pip install torch --index-url https://download.pytorch.org/whl/cu124 \
+ && pip install . && rm -rf app
+COPY . .
+RUN pip install --no-deps . && useradd --create-home --uid 10001 storepulse && mkdir -p /data/storage \
+ && chown -R storepulse /data /app
+USER storepulse
+
+ENV TRAINING_DEVICE=cuda
+CMD ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "training", "-c", "1", "-n", "gpu@%h", "--loglevel=INFO"]
