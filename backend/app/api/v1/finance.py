@@ -74,11 +74,17 @@ async def build_context(
     if df.empty:
         raise NotFoundError(f"Forecast has no rows for store '{store.code}'")
     # Item-level forecasts roll up to store-day for finance.
-    days = (
-        df.groupby("ds", as_index=False)
-        .agg(yhat=("yhat", "sum"), is_promo=("is_promo", "max"), is_open=("is_open", "max"))
-        .sort_values("ds", ignore_index=True)
-    )
+    has_price = "price" in df and df["price"].notna().any()
+    if has_price:
+        # Items without a price that day contribute nothing; flag the day as unpriced if any are missing.
+        df = df.assign(price_revenue=df["yhat"] * df["price"], unpriced=df["price"].isna() & (df["yhat"] > 0))
+    agg = {"yhat": ("yhat", "sum"), "is_promo": ("is_promo", "max"), "is_open": ("is_open", "max")}
+    if has_price:
+        agg |= {"price_revenue": ("price_revenue", "sum"), "unpriced": ("unpriced", "sum")}
+    days = df.groupby("ds", as_index=False).agg(**agg).sort_values("ds", ignore_index=True)
+    if has_price:
+        days.loc[days["unpriced"] > 0, "price_revenue"] = float("nan")
+        days = days.drop(columns="unpriced")
     atv = None
     if cfg.avg_transaction_value is None and store.target_type == TargetType.SALES:
         atv = await run_in_threadpool(_historical_atv, dataset, store.code)

@@ -12,21 +12,31 @@ from app.services import finance
 
 def _cfg(**over):  # noqa: ANN003, ANN202
     base = dict(
-        gross_margin_pct=0.40, cogs_pct=0.55, fixed_daily_overhead=500, promo_discount_pct=0.20,
-        hourly_wage=20, customers_per_staff_hour=10, min_staff_per_shift=2, shift_hours=8,
-        operating_hours_per_day=12, avg_transaction_value=None, avg_units_per_transaction=None,
+        gross_margin_pct=0.40,
+        cogs_pct=0.55,
+        fixed_daily_overhead=500,
+        promo_discount_pct=0.20,
+        hourly_wage=20,
+        customers_per_staff_hour=10,
+        min_staff_per_shift=2,
+        shift_hours=8,
+        operating_hours_per_day=12,
+        avg_transaction_value=None,
+        avg_units_per_transaction=None,
     )
     base.update(over)
     return SimpleNamespace(**base)
 
 
 def _days() -> pd.DataFrame:
-    return pd.DataFrame({
-        "ds": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
-        "yhat": [10_000.0, 8_000.0, 0.0],
-        "is_promo": [True, False, False],
-        "is_open": [True, True, False],
-    })
+    return pd.DataFrame(
+        {
+            "ds": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
+            "yhat": [10_000.0, 8_000.0, 0.0],
+            "is_promo": [True, False, False],
+            "is_open": [True, True, False],
+        }
+    )
 
 
 def test_workforce_and_pnl_sales_target() -> None:
@@ -71,3 +81,15 @@ def test_customers_target_values_revenue_with_atv() -> None:
     wf, _ = finance.workforce_plan(d, p)
     days, _, _ = finance.pnl(d, wf, p)
     assert days.loc[1, "net_revenue"] == pytest.approx(1000)
+
+
+def test_units_target_valued_with_item_prices() -> None:
+    p = finance.FinanceInputs.from_config(_cfg(avg_units_per_transaction=2.0), "units")
+    d = _days().assign(yhat=[100.0, 50.0, 0.0], price_revenue=[350.0, 120.0, 0.0])
+    wf, _ = finance.workforce_plan(d, p)
+    days, _, notes = finance.pnl(d, wf, p)
+    assert days["net_revenue"].tolist()[1] == pytest.approx(120.0)
+    assert "selling price" in notes[0]
+    # Without prices (and without ATV) a units forecast can't be valued -> explicit error, no guess.
+    with pytest.raises(DomainValidationError):
+        finance.pnl(d.drop(columns="price_revenue"), wf, p)

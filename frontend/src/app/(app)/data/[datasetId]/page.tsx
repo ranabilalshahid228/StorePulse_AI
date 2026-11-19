@@ -4,7 +4,8 @@ import { use, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { HealthReport, SchemaMapping } from "@/lib/types";
-import { useDataset } from "@/hooks/queries";
+import { useDataset, useDatasets } from "@/hooks/queries";
+import { JoinsEditor } from "@/components/joins-editor";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Select, Skeleton, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
 import { ErrorNotice, JobProgress, Kpi, PageHeader, StatusBadge } from "@/components/shared";
@@ -29,10 +30,13 @@ export default function DatasetPage({ params }: { params: Promise<{ datasetId: s
         actions={<JobProgress status={ds.status} pct={ds.progress_pct} stage={ds.stage} />}
       />
       {ds.error ? <div className="mb-6"><ErrorNotice error={new Error(ds.error)} /></div> : null}
-      {ds.status === "mapping_required" || ds.status === "failed" ? (
+      {ds.role === "auxiliary" ? (
+        <p className="mb-6 text-sm text-muted-foreground">Side table — join it into a sales history from that dataset&apos;s mapping form.</p>
+      ) : null}
+      {ds.role === "primary" && (ds.status === "mapping_required" || ds.status === "failed") ? (
         <MappingForm datasetId={ds.id} columns={(ds.column_profile.columns ?? []).map((c) => c.name)} suggested={ds.schema_mapping ?? ds.suggested_mapping} />
       ) : null}
-      {ds.status === "ready" ? <HealthAndEda datasetId={ds.id} /> : null}
+      {ds.role === "primary" && ds.status === "ready" ? <HealthAndEda datasetId={ds.id} /> : null}
       <ColumnProfileCard columns={ds.column_profile.columns ?? []} />
     </>
   );
@@ -40,10 +44,14 @@ export default function DatasetPage({ params }: { params: Promise<{ datasetId: s
 
 function MappingForm({ datasetId, columns, suggested }: { datasetId: string; columns: string[]; suggested: Partial<SchemaMapping> }) {
   const qc = useQueryClient();
+  const datasets = useDatasets();
+  const auxiliary = (datasets.data?.items ?? []).filter((d) => d.role === "auxiliary");
   const [m, setM] = useState<SchemaMapping>({
     layout: "long",
     known_future_columns: [],
     categorical_columns: [],
+    joins: [],
+    helper_columns: [],
     ...suggested,
   } as SchemaMapping);
   useEffect(() => setM((prev) => ({ ...prev, ...suggested }) as SchemaMapping), [suggested]);
@@ -53,6 +61,11 @@ function MappingForm({ datasetId, columns, suggested }: { datasetId: string; col
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["dataset", datasetId] }),
   });
 
+  const joined = (m.joins ?? []).flatMap((j) => j.columns);
+  // Wide files only carry id columns; covariates there must come from joins.
+  const covariatePool = m.layout === "long" ? [...columns, ...joined] : joined;
+  const categoricalPool = m.layout === "long" ? [...columns, ...joined] : [...(m.id_columns ?? []), ...joined];
+
   const single = (key: keyof SchemaMapping, label: string, required = false) => (
     <Field label={label}>
       <Select value={(m[key] as string | null) ?? ""} onChange={(e) => setM({ ...m, [key]: e.target.value || null })} required={required}>
@@ -61,16 +74,23 @@ function MappingForm({ datasetId, columns, suggested }: { datasetId: string; col
       </Select>
     </Field>
   );
-  const multi = (key: "known_future_columns" | "categorical_columns", label: string, hint: string) => (
+  const multi = (
+    key: "known_future_columns" | "categorical_columns" | "helper_columns" | "id_columns",
+    label: string,
+    hint: string,
+    pool: string[],
+  ) => (
     <Field label={label} hint={hint}>
       <div className="flex flex-wrap gap-1.5">
-        {columns.map((c) => {
-          const on = m[key].includes(c);
+        {pool.length ? null : <span className="text-xs text-muted-foreground">No columns available yet.</span>}
+        {[...new Set(pool)].map((c) => {
+          const current = m[key] ?? [];
+          const on = current.includes(c);
           return (
             <button
               type="button"
               key={c}
-              onClick={() => setM({ ...m, [key]: on ? m[key].filter((x) => x !== c) : [...m[key], c] })}
+              onClick={() => setM({ ...m, [key]: on ? current.filter((x) => x !== c) : [...current, c] })}
               className={`rounded-full border px-2.5 py-0.5 text-xs ${on ? "border-primary bg-primary text-primary-foreground" : "hover:bg-muted"}`}
             >
               {c}
@@ -78,6 +98,14 @@ function MappingForm({ datasetId, columns, suggested }: { datasetId: string; col
           );
         })}
       </div>
+    </Field>
+  );
+  const role = (key: "promo_column" | "open_column" | "price_column", label: string) => (
+    <Field label={label}>
+      <Select value={m[key] ?? ""} onChange={(e) => setM({ ...m, [key]: e.target.value || null })}>
+        <option value="">— none —</option>
+        {m.known_future_columns.map((c) => <option key={c}>{c}</option>)}
+      </Select>
     </Field>
   );
 
@@ -95,39 +123,46 @@ function MappingForm({ datasetId, columns, suggested }: { datasetId: string; col
           </Select>
         </Field>
         {m.layout === "long" ? (
-          <>
-            <div className="grid gap-4 md:grid-cols-3">
-              {single("date_column", "Date column", true)}
-              {single("target_column", "Target column", true)}
-              {single("store_column", "Store column")}
-              {single("item_column", "Item / SKU column")}
-              {single("customers_column", "Customers column")}
-            </div>
-            {multi("known_future_columns", "Known-future covariates", "Numeric/flag columns known ahead of time (promo, open, holidays).")}
-            {multi("categorical_columns", "Categorical covariates", "Text categories such as holiday type.")}
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Promo flag (for P&L)">
-                <Select value={m.promo_column ?? ""} onChange={(e) => setM({ ...m, promo_column: e.target.value || null })}>
-                  <option value="">— none —</option>
-                  {m.known_future_columns.map((c) => <option key={c}>{c}</option>)}
-                </Select>
-              </Field>
-              <Field label="Open flag (for staffing)">
-                <Select value={m.open_column ?? ""} onChange={(e) => setM({ ...m, open_column: e.target.value || null })}>
-                  <option value="">— none —</option>
-                  {m.known_future_columns.map((c) => <option key={c}>{c}</option>)}
-                </Select>
-              </Field>
-            </div>
-          </>
-        ) : (
           <div className="grid gap-4 md:grid-cols-3">
+            {single("date_column", "Date column", true)}
+            {single("target_column", "Target column", true)}
             {single("store_column", "Store column")}
-            {single("item_column", "Item column")}
-            <Field label="Day-column prefix"><Input value={m.wide_value_prefix ?? ""} onChange={(e) => setM({ ...m, wide_value_prefix: e.target.value })} /></Field>
-            <Field label="Date of day 1" hint="M5: 2011-01-29"><Input type="date" value={m.wide_start_date ?? ""} onChange={(e) => setM({ ...m, wide_start_date: e.target.value })} /></Field>
+            {single("item_column", "Item / SKU column")}
+            {single("customers_column", "Customers column")}
           </div>
+        ) : (
+          <>
+            <div className="grid gap-4 md:grid-cols-4">
+              {single("store_column", "Store column")}
+              {single("item_column", "Item column")}
+              <Field label="Day-column prefix"><Input value={m.wide_value_prefix ?? ""} onChange={(e) => setM({ ...m, wide_value_prefix: e.target.value })} /></Field>
+              <Field label="Date of day 1" hint="M5: 2011-01-29"><Input type="date" value={m.wide_start_date ?? ""} onChange={(e) => setM({ ...m, wide_start_date: e.target.value })} /></Field>
+            </div>
+            {multi("id_columns", "Id columns to keep", "Hierarchy columns such as dept / category / state.", columns)}
+          </>
         )}
+        <Field label="Only these stores" hint="Comma-separated store codes; leave empty for all. Useful for very large files.">
+          <Input
+            defaultValue={(m.store_filter ?? []).join(", ")}
+            placeholder="e.g. CA_1, TX_2"
+            onBlur={(e) => {
+              const v = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+              setM({ ...m, store_filter: v.length ? v : null });
+            }}
+          />
+        </Field>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm font-medium">Side-table joins</p>
+          <JoinsEditor joins={m.joins ?? []} auxiliary={auxiliary} onChange={(joins) => setM({ ...m, joins })} />
+        </div>
+        {multi("known_future_columns", "Known-future covariates", "Numeric/flag columns known ahead of time (promo, open, holidays, price).", covariatePool)}
+        {multi("categorical_columns", "Categorical covariates", "Categories such as holiday type, department or event name.", categoricalPool)}
+        {joined.length ? multi("helper_columns", "Join-only helper columns", "Used only as keys for later joins, then dropped (e.g. M5 wm_yr_wk).", joined) : null}
+        <div className="grid gap-4 md:grid-cols-3">
+          {role("promo_column", "Promo flag (for P&L)")}
+          {role("open_column", "Open flag (for staffing)")}
+          {role("price_column", "Unit price (values units forecasts)")}
+        </div>
         <ErrorNotice error={save.error} />
         <div><Button onClick={() => save.mutate()} disabled={save.isPending}>Confirm & process</Button></div>
       </CardContent>

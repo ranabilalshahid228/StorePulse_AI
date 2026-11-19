@@ -8,6 +8,31 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import ORMModel
 
+CANONICAL_KEYS = ("ds", "store_code", "item_id")
+
+
+class JoinSpec(BaseModel):
+    """Left-join columns from an *auxiliary* dataset onto the canonical frame.
+
+    Joins run in order, at ingestion and again at forecast time for future dates, so covariates
+    known in advance (calendar events, planned prices) get their real future values.
+    `left_on` may reference canonical keys (ds, store_code, item_id), categorical id columns, or
+    columns produced by earlier joins. A right key joined to `ds` is parsed as a date.
+    """
+
+    dataset_id: uuid.UUID
+    left_on: list[str] = Field(min_length=1)
+    right_on: list[str] = Field(min_length=1)
+    columns: list[str] = Field(min_length=1, description="Right-side columns to add")
+
+    @model_validator(mode="after")
+    def _keys(self) -> JoinSpec:
+        if len(self.left_on) != len(self.right_on):
+            raise ValueError("left_on and right_on must have the same length")
+        if set(self.columns) & set(CANONICAL_KEYS):
+            raise ValueError("joined columns cannot overwrite canonical keys")
+        return self
+
 
 class SchemaMapping(BaseModel):
     """How raw columns map onto the canonical long format: (ds, store_code, item_id?, y, exog...).
@@ -32,10 +57,20 @@ class SchemaMapping(BaseModel):
     # Semantic roles used by P&L / workforce. Must also appear in known_future_columns.
     promo_column: str | None = None
     open_column: str | None = None
+    price_column: str | None = Field(
+        default=None, description="Unit selling price; lets P&L value a units forecast as units x price"
+    )
     # Wide layout
     wide_value_prefix: str | None = None
     wide_start_date: date | None = None
     id_columns: list[str] = Field(default_factory=list)
+    # Multi-file datasets
+    joins: list[JoinSpec] = Field(default_factory=list)
+    helper_columns: list[str] = Field(
+        default_factory=list, description="Join outputs used only as keys for later joins; dropped after"
+    )
+    # Ingest only these store codes (useful for very large multi-store files such as M5).
+    store_filter: list[str] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> SchemaMapping:
@@ -45,17 +80,45 @@ class SchemaMapping(BaseModel):
         else:
             if not self.wide_value_prefix or not self.wide_start_date:
                 raise ValueError("wide layout requires wide_value_prefix and wide_start_date")
-            if self.known_future_columns or self.customers_column:
-                raise ValueError("wide layout supports only id/store/item columns; join covariates later")
-        for role in (self.promo_column, self.open_column):
+            if self.customers_column:
+                raise ValueError("wide layout does not support customers_column")
+            joined = self.joined_columns()
+            raw_numeric = set(self.known_future_columns) - joined
+            if raw_numeric:
+                raise ValueError(f"wide layout covariates must come from joins: {sorted(raw_numeric)}")
+            raw_cats = set(self.categorical_columns) - joined - set(self.id_columns)
+            if raw_cats:
+                raise ValueError(
+                    f"wide-layout categorical columns must be id_columns or joined: {sorted(raw_cats)}"
+                )
+        for role in (self.promo_column, self.open_column, self.price_column):
             if role and role not in self.known_future_columns:
                 raise ValueError(f"'{role}' must also be listed in known_future_columns")
         overlap = set(self.known_future_columns) & set(self.categorical_columns)
         if overlap:
             raise ValueError(f"columns cannot be both numeric and categorical: {sorted(overlap)}")
+        # Every joined column must have a role; join keys must be resolvable in order.
+        available = set(CANONICAL_KEYS) | set(self.categorical_columns) - self.joined_columns()
+        roles = set(self.known_future_columns) | set(self.categorical_columns) | set(self.helper_columns)
+        for i, j in enumerate(self.joins):
+            missing = set(j.left_on) - available
+            if missing:
+                raise ValueError(f"join #{i + 1}: left_on columns not available yet: {sorted(missing)}")
+            unassigned = set(j.columns) - roles
+            if unassigned:
+                raise ValueError(
+                    f"join #{i + 1}: list {sorted(unassigned)} in known_future_columns, "
+                    "categorical_columns or helper_columns"
+                )
+            available |= set(j.columns)
         return self
 
+    def joined_columns(self) -> set[str]:
+        return {c for j in self.joins for c in j.columns}
+
     def referenced_columns(self) -> list[str]:
+        """Columns that must exist in the primary (raw) file."""
+        joined = self.joined_columns()
         cols = [
             self.date_column,
             self.target_column,
@@ -66,7 +129,7 @@ class SchemaMapping(BaseModel):
             *self.categorical_columns,
             *self.id_columns,
         ]
-        return [c for c in cols if c]
+        return list(dict.fromkeys(c for c in cols if c and c not in joined))
 
 
 class ColumnProfile(BaseModel):
@@ -98,6 +161,7 @@ class DatasetRead(ORMModel):
     schema_mapping: dict[str, Any] | None
     suggested_mapping: dict[str, Any]
     column_profile: dict[str, Any]
+    role: str
     created_at: datetime
 
 

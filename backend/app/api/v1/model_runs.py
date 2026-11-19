@@ -47,6 +47,8 @@ async def list_families(_: CurrentPrincipal) -> list[ModelFamilyInfo]:
 
 async def _validate(body: TrainRequest, principal: AnalystPrincipal, db: DbSession) -> tuple[Dataset, int]:
     ds = await get_owned(db, Dataset, body.dataset_id, principal.organization_id)
+    if ds.role != "primary":
+        raise PreconditionFailedError("Auxiliary datasets cannot be trained on; train on the primary dataset")
     if ds.status != DatasetStatus.READY:
         raise PreconditionFailedError("Dataset is not ready for training", details={"status": ds.status})
     if body.store_id:
@@ -74,6 +76,7 @@ def _new_run(
         horizon_days=body.horizon_days,
         validation_days=validation_days,
         hyperparameters=body.hyperparameters,
+        training_config=body.training_config(),
         status=JobStatus.QUEUED.value,
         progress_pct=0.0,
         stage="queued",

@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, Date, ForeignKey, String, Text
+from sqlalchemy import BigInteger, CheckConstraint, Date, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,8 @@ class Dataset(UUIDPrimaryKeyMixin, TimestampMixin, JobStateMixin, Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     raw_path: Mapped[str] = mapped_column(String(500), nullable=False)
     parquet_path: Mapped[str | None] = mapped_column(String(500))
+    # primary: a time series to ingest/train on; auxiliary: a side table joined via SchemaMapping.joins
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="primary", server_default="primary")
     # `status` (from JobStateMixin) holds DatasetStatus values for datasets.
     # Column header + sample-based type inference produced at upload time.
     column_profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
@@ -54,3 +56,5 @@ class Dataset(UUIDPrimaryKeyMixin, TimestampMixin, JobStateMixin, Base):
     frequency: Mapped[str | None] = mapped_column(String(8))
 
     store: Mapped[Store | None] = relationship(back_populates="datasets")
+
+    __table_args__ = (CheckConstraint("role IN ('primary','auxiliary')", name="role_valid"),)

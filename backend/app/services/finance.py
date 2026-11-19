@@ -84,9 +84,13 @@ def _customers(forecast: pd.Series, p: FinanceInputs) -> tuple[pd.Series, str]:
     )
 
 
-def _net_revenue(forecast: pd.Series, p: FinanceInputs) -> tuple[pd.Series, str]:
+def _net_revenue(
+    forecast: pd.Series, p: FinanceInputs, price_revenue: pd.Series | None = None
+) -> tuple[pd.Series, str]:
     if p.target_type == TargetType.SALES:
         return forecast, "Forecast target is realized (net) sales."
+    if p.target_type == TargetType.UNITS and price_revenue is not None and price_revenue.notna().all():
+        return price_revenue, "Net revenue = sum over items of forecast units x selling price for that day."
     if not p.avg_transaction_value:
         raise DomainValidationError(f"avg_transaction_value is required to value a {p.target_type} forecast")
     if p.target_type == TargetType.CUSTOMERS:
@@ -151,7 +155,8 @@ def pnl(
     days: pd.DataFrame, labor: pd.DataFrame, p: FinanceInputs
 ) -> tuple[pd.DataFrame, dict[str, float | None], list[str]]:
     """`days` columns: ds, yhat, is_promo, is_open. `labor` is the workforce_plan output."""
-    net, note = _net_revenue(days["yhat"].astype(float), p)
+    price_rev = days["price_revenue"].astype(float) if "price_revenue" in days else None
+    net, note = _net_revenue(days["yhat"].astype(float), p, price_rev)
     discount = days["is_promo"].astype(bool) & days["is_open"].astype(bool)
     gross = net.where(~discount, net / (1 - p.promo_discount_pct))
     df = pd.DataFrame(

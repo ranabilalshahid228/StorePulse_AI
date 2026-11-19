@@ -140,10 +140,49 @@ alembic downgrade -1
 7. `POST /forecasts` or `/forecasts/event`; then `/forecasts/{id}/pnl|workforce?store_id=…`.
 8. `GET /reports/forecasts/{id}/forecast.csv | store-plan.csv | store-plan.pdf`.
 
-Rossmann mapping: `date_column=Date, target_column=Sales, store_column=Store, customers_column=Customers,
-known_future_columns=[Open, Promo, SchoolHoliday], categorical_columns=[StateHoliday], promo_column=Promo, open_column=Open`.
-M5: `layout=wide, wide_value_prefix=d_, wide_start_date=2011-01-29, store_column=store_id, item_column=item_id`
-(59M rows long — train per store via `store_id`).
+### Multi-file datasets (auxiliary tables + joins)
+
+Upload side tables with `role=auxiliary` (`POST /datasets`, form field `role`). They are profiled and
+immediately `ready`, never trained on. A primary dataset's mapping lists `joins` (applied in order, at
+ingestion **and again for future dates at forecast time**, so calendar events / planned prices use real
+future values). `left_on` may use canonical keys (`ds, store_code, item_id`), categorical id columns, or
+columns from earlier joins; every joined column must be listed in `known_future_columns`,
+`categorical_columns` or `helper_columns` (join-only keys, dropped after). Implementation:
+`services/joins.py` (shared), `services/ingestion.py::convert_to_parquet`, `workers/tasks.py::load_mapping_joins`.
+
+**Rossmann** (long): `date_column=Date, target_column=Sales, store_column=Store, customers_column=Customers,
+known_future_columns=[Open, Promo, SchoolHoliday], categorical_columns=[StateHoliday], promo_column=Promo,
+open_column=Open`. Import `store.csv` via `POST /stores/import` → store features are added automatically
+(`use_store_features`, default on): store type, assortment, competition distance & months open,
+Promo2 active flag (from since-week/year + interval months) and weeks since Promo2 start.
+
+**M5** (wide, 3 files): upload `calendar.csv` and `sell_prices.csv` as auxiliary, then map
+`sales_train_evaluation.csv`:
+```json
+{"layout": "wide", "wide_value_prefix": "d_", "wide_start_date": "2011-01-29",
+ "store_column": "store_id", "item_column": "item_id", "id_columns": ["dept_id", "cat_id", "state_id"],
+ "store_filter": ["CA_1"],
+ "joins": [
+   {"dataset_id": "<calendar>", "left_on": ["ds"], "right_on": ["date"],
+    "columns": ["wm_yr_wk", "event_name_1", "event_type_1", "snap_CA", "snap_TX", "snap_WI"]},
+   {"dataset_id": "<sell_prices>", "left_on": ["store_code", "item_id", "wm_yr_wk"],
+    "right_on": ["store_id", "item_id", "wm_yr_wk"], "columns": ["sell_price"]}],
+ "helper_columns": ["wm_yr_wk"],
+ "categorical_columns": ["dept_id", "cat_id", "state_id", "event_name_1", "event_type_1"],
+ "known_future_columns": ["snap_CA", "snap_TX", "snap_WI", "sell_price"], "price_column": "sell_price"}
+```
+Set the store's `target_type=units`; with `price_column` the P&L values the forecast as Σ units × price.
+Full M5 is ~59M rows long — use `store_filter` and/or `history_days` (e.g. 730) per training run.
+
+### Local pipeline runner (no DB / queue)
+`scripts/run_pipeline.py` runs the production ingestion → diagnostics → features → train → forecast code
+on the bundled datasets and prints validation metrics:
+```powershell
+cd backend
+python -m scripts.run_pipeline rossmann                          # all 1,115 stores
+python -m scripts.run_pipeline m5 --stores CA_1 --history-days 730 --out m5.json
+python -m scripts.run_pipeline rossmann --stores 1 2 3 --families lightgbm --no-store-features
+```
 
 ## Background jobs & progress
 
@@ -159,7 +198,12 @@ M5: `layout=wide, wide_value_prefix=d_, wide_start_date=2011-01-29, store_column
 ## ML design
 
 - Canonical long format; `ml/features.py::complete_calendar` reindexes each series to a contiguous
-  daily calendar before lags.
+  daily calendar before lags. All features are vectorized across series (integer group ids +
+  groupby/rolling, float32) — an M5 store (3,049 items) featurizes in seconds.
+- Features: calendar, weekday-aligned lags (offset+0/7/14/21/49), rolling mean/std/zero-share, same-weekday
+  4-week mean, known-future covariates, price features (vs trailing 28-day mean, 7-day change), store
+  metadata features, categorical ids. Training options per run (`training_config`): `history_days`,
+  `use_store_features`.
 - **Direct multi-horizon, leakage-free:** every lag/rolling feature is offset by
   `lag_offset = ceil(horizon/7)*7`, so any day ≤ horizon ahead is predictable from history alone. A
   model trained for horizon H can forecast ≤ H days (enforced by the API).
@@ -168,7 +212,10 @@ M5: `layout=wide, wide_value_prefix=d_, wide_start_date=2011-01-29, store_column
 - Families (`ml/families.py`): `seasonal_naive` (baseline), `lightgbm`, `torch_mlp` (embeddings, CUDA).
   Add one: subclass `ForecastModel`, add to `FAMILIES` + `ModelFamily` enum + frontend `types.ts`.
 - Event forecasts override known-future covariates on date ranges and diff against a baseline run.
-  Unspecified future covariates = `covariate_defaults` or last observed same-weekday value.
+  Future covariates resolve as: auxiliary joins (real future values) → `covariate_defaults` → last
+  observed same-weekday value. Id categoricals carry forward before joins run.
+- `torch_mlp` trains on a standardized log1p target and caps batch size so small datasets still get ≥50
+  steps/epoch.
 
 ## GPU training workflow
 

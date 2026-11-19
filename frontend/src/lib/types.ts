@@ -75,10 +75,21 @@ export interface SchemaMapping {
   categorical_columns: string[];
   promo_column?: string | null;
   open_column?: string | null;
+  price_column?: string | null;
   frequency?: "D" | "W";
   wide_value_prefix?: string | null;
   wide_start_date?: string | null;
   id_columns?: string[];
+  joins?: JoinSpec[];
+  helper_columns?: string[];
+  store_filter?: string[] | null;
+}
+
+export interface JoinSpec {
+  dataset_id: UUID;
+  left_on: string[];
+  right_on: string[];
+  columns: string[];
 }
 
 export interface Dataset {
@@ -87,6 +98,7 @@ export interface Dataset {
   source_filename: string;
   file_format: string;
   size_bytes: number;
+  role: "primary" | "auxiliary";
   status: DatasetStatus;
   progress_pct: number;
   stage: string | null;
@@ -135,6 +147,7 @@ export interface ModelRun {
   validation_days: number;
   hyperparameters: Record<string, unknown>;
   n_trials: number | null;
+  training_config: { history_days?: number | null; use_store_features?: boolean };
   metrics: Record<string, unknown> & { wape?: number; rmse?: number; mae?: number; rmspe?: number };
   inference_ms: number | null;
   device: string | null;

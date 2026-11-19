@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Float, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, Float, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,6 +40,10 @@ class ModelRun(UUIDPrimaryKeyMixin, TimestampMixin, JobStateMixin, Base):
     epoch_logs: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     feature_columns: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # Non-hyperparameter run settings: history_days, use_store_features, ...
+    training_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     artifact_path: Mapped[str | None] = mapped_column(String(500))
     plot_paths: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     inference_ms: Mapped[float | None] = mapped_column(Float)  # mean latency per 1k rows

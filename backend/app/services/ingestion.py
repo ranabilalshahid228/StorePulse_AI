@@ -27,6 +27,7 @@ import pyarrow.parquet as pq
 
 from app.core.exceptions import DomainValidationError
 from app.schemas.dataset import SchemaMapping
+from app.services.joins import PreparedJoin, apply_joins
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ def profile_upload(path: Path, file_format: str) -> tuple[dict[str, Any], dict[s
     if df.empty:
         raise DomainValidationError("Uploaded file contains no rows")
 
+    names = [str(c) for c in df.columns]
+    wide_cols = [c for c in names if re.fullmatch(r"d_\d+", c)]
+    is_wide = len(wide_cols) > 30
+    if is_wide:  # don't profile thousands of day columns individually
+        df = df.drop(columns=wide_cols)
+
     columns: list[dict[str, Any]] = []
     types: dict[str, str] = {}
     for col in df.columns:
@@ -99,18 +106,18 @@ def profile_upload(path: Path, file_format: str) -> tuple[dict[str, Any], dict[s
                 "sample_values": [v.item() if isinstance(v, np.generic) else v for v in sample],
             }
         )
-    profile = {"sample_rows": len(df), "columns": columns}
+    profile: dict[str, Any] = {"sample_rows": len(df), "columns": columns}
 
-    names = [str(c) for c in df.columns]
-    wide_cols = [c for c in names if re.fullmatch(r"d_\d+", c)]
-    if len(wide_cols) > 30:
+    if is_wide:
+        profile["wide_value_column_count"] = len(wide_cols)
+        names = [c for c in names if c not in wide_cols]
         suggestion: dict[str, Any] = {
             "layout": "wide",
             "wide_value_prefix": "d_",
             "wide_start_date": None,  # must be confirmed by the user (e.g. M5: 2011-01-29)
             "store_column": _first_match(names, _STORE_HINTS),
             "item_column": _first_match(names, _ITEM_HINTS),
-            "id_columns": [c for c in names if c not in wide_cols][:6],
+            "id_columns": names[:8],
         }
         return profile, suggestion
 
@@ -158,8 +165,24 @@ def _canonical_schema(mapping: SchemaMapping) -> pa.Schema:
     return pa.schema(fields)
 
 
+def _to_float(col: pd.Series) -> pd.Series:
+    if col.dtype == object or str(col.dtype).startswith("string"):
+        col = col.map({"True": 1, "False": 0, "true": 1, "false": 0}).fillna(col)
+    return pd.to_numeric(col, errors="coerce").astype("float64")
+
+
+def coerce_covariates(df: pd.DataFrame, m: SchemaMapping) -> pd.DataFrame:
+    """Cast covariates to their canonical dtypes (also used for future frames at forecast time)."""
+    for c in m.known_future_columns:
+        df[c] = _to_float(df[c]) if c in df.columns else np.nan
+    for c in m.categorical_columns:
+        df[c] = df[c].astype("string").str.strip() if c in df.columns else pd.NA
+    return df
+
+
 def _transform_long(chunk: pd.DataFrame, m: SchemaMapping) -> pd.DataFrame:
     assert m.date_column and m.target_column
+    joined = m.joined_columns()
     out = pd.DataFrame(
         {
             "ds": pd.to_datetime(chunk[m.date_column], format=m.date_format, errors="coerce").dt.date,
@@ -170,20 +193,16 @@ def _transform_long(chunk: pd.DataFrame, m: SchemaMapping) -> pd.DataFrame:
     )
     if m.customers_column:
         out["customers"] = pd.to_numeric(chunk[m.customers_column], errors="coerce").astype("float64")
-    for c in m.known_future_columns:
-        col = chunk[c]
-        if col.dtype == object:
-            col = col.map({"True": 1, "False": 0, "true": 1, "false": 0}).fillna(col)
-        out[c] = pd.to_numeric(col, errors="coerce").astype("float64")
-    for c in m.categorical_columns:
-        out[c] = chunk[c].astype("string").str.strip()
+    for c in [*m.known_future_columns, *m.categorical_columns]:
+        if c not in joined:
+            out[c] = chunk[c]
     return out[out["ds"].notna()]
 
 
 def _transform_wide(chunk: pd.DataFrame, m: SchemaMapping) -> pd.DataFrame:
     assert m.wide_value_prefix and m.wide_start_date
     value_cols = [c for c in chunk.columns if str(c).startswith(m.wide_value_prefix)]
-    id_cols = [c for c in {m.store_column, m.item_column, *m.id_columns} if c]
+    id_cols = list(dict.fromkeys(c for c in (m.store_column, m.item_column, *m.id_columns) if c))
     long = chunk[id_cols + value_cols].melt(id_vars=id_cols, var_name="_d", value_name="y")
     offsets = long["_d"].str.slice(len(m.wide_value_prefix)).astype(int) - 1
     start = pd.Timestamp(m.wide_start_date)
@@ -195,7 +214,27 @@ def _transform_wide(chunk: pd.DataFrame, m: SchemaMapping) -> pd.DataFrame:
             "y": pd.to_numeric(long["y"], errors="coerce").astype("float64"),
         }
     )
+    for c in m.categorical_columns:
+        if c in id_cols:
+            out[c] = long[c].to_numpy()
     return out
+
+
+def _filter_stores(chunk: pd.DataFrame, m: SchemaMapping) -> pd.DataFrame:
+    if not m.store_filter or not m.store_column:
+        return chunk
+    return chunk[chunk[m.store_column].astype(str).isin(set(m.store_filter))]
+
+
+def _wide_chunk_rows(raw_path: Path, file_format: str, m: SchemaMapping, chunk_rows: int) -> int:
+    """Raw rows per chunk so that the *melted* chunk stays around `chunk_rows` rows."""
+    if file_format == "parquet":
+        names = pq.ParquetFile(raw_path).schema_arrow.names
+    else:
+        names = pd.read_csv(raw_path, nrows=0).columns
+    prefix = m.wide_value_prefix or ""
+    n_days = sum(1 for c in names if prefix and str(c).startswith(prefix))
+    return max(1, chunk_rows // max(n_days, 1))
 
 
 def convert_to_parquet(
@@ -205,8 +244,9 @@ def convert_to_parquet(
     out_path: Path,
     chunk_rows: int,
     progress: ProgressFn,
+    joins: list[PreparedJoin] | None = None,
 ) -> dict[str, Any]:
-    """Stream the raw file into canonical Parquet. Returns summary stats."""
+    """Stream the raw file into canonical Parquet, applying store filters and auxiliary joins."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     schema = _canonical_schema(mapping)
     total_bytes = max(raw_path.stat().st_size, 1)
@@ -215,11 +255,16 @@ def convert_to_parquet(
     ds_min = ds_max = None
     series: set[tuple[str, str | None]] = set()
     stores: set[str] = set()
+    joins = joins or []
 
-    usecols = None
-    if mapping.layout == "long":
-        usecols = mapping.referenced_columns()
+    usecols = mapping.referenced_columns() if mapping.layout == "long" else None
+    read_rows = (
+        chunk_rows
+        if mapping.layout == "long"
+        else _wide_chunk_rows(raw_path, file_format, mapping, chunk_rows)
+    )
 
+    fh = None
     writer = pq.ParquetWriter(out_path, schema, compression="zstd")
     try:
         if file_format == "parquet":
@@ -231,7 +276,7 @@ def convert_to_parquet(
             )
         else:
             fh = raw_path.open("rb")
-            reader = pd.read_csv(fh, chunksize=chunk_rows, usecols=usecols, low_memory=False)
+            reader = pd.read_csv(fh, chunksize=read_rows, usecols=usecols, low_memory=False)
             iterator = ((chunk, fh.tell() / total_bytes) for chunk in reader)
 
         missing_checked = False
@@ -243,15 +288,21 @@ def convert_to_parquet(
                         "Mapped columns not found in file", details={"missing": missing}
                     )
                 missing_checked = True
-            before = len(chunk)
-            df = (
-                _transform_long(chunk, mapping)
-                if mapping.layout == "long"
-                else _transform_wide(chunk, mapping)
-            )
-            dropped += before - len(df) if mapping.layout == "long" else 0
+            chunk = _filter_stores(chunk, mapping)
+            if chunk.empty:
+                progress(min(frac, 0.99), "converting")
+                continue
+            if mapping.layout == "long":
+                before = len(chunk)
+                df = _transform_long(chunk, mapping)
+                dropped += before - len(df)
+            else:
+                df = _transform_wide(chunk, mapping)
             if df.empty:
                 continue
+            if joins:
+                df = apply_joins(df, joins)
+            df = coerce_covariates(df, mapping).drop(columns=mapping.helper_columns, errors="ignore")
             rows += len(df)
             cmin, cmax = df["ds"].min(), df["ds"].max()
             ds_min = cmin if ds_min is None else min(ds_min, cmin)
@@ -259,15 +310,17 @@ def convert_to_parquet(
             keys = df[["store_code", "item_id"]].drop_duplicates()
             series.update(zip(keys["store_code"], keys["item_id"], strict=True))
             stores.update(keys["store_code"].unique().tolist())
-            writer.write_table(pa.Table.from_pandas(df, schema=schema, preserve_index=False))
+            writer.write_table(pa.Table.from_pandas(df[schema.names], schema=schema, preserve_index=False))
             progress(min(frac, 0.99), "converting")
     finally:
         writer.close()
-        if file_format != "parquet":
+        if fh is not None:
             fh.close()
 
     if rows == 0:
-        raise DomainValidationError("No valid rows after applying schema mapping (check date format)")
+        raise DomainValidationError(
+            "No valid rows after applying schema mapping (check date format / store filter)"
+        )
     return {
         "row_count": rows,
         "dropped_rows": dropped,

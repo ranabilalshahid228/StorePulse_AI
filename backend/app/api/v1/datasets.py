@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import pandas as pd
 import pyarrow.dataset as pads
@@ -26,6 +26,11 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 ALLOWED_EXT = {".csv": "csv", ".parquet": "parquet"}
 
 
+def _profile_columns(ds: Dataset) -> set[str]:
+    profile = ds.column_profile or {}
+    return {c["name"] for c in profile.get("columns", [])}
+
+
 @router.post("", response_model=DatasetRead, status_code=status.HTTP_201_CREATED)
 async def upload_dataset(
     principal: AnalystPrincipal,
@@ -34,10 +39,13 @@ async def upload_dataset(
     name: Annotated[str, Form(min_length=1, max_length=200)],
     description: Annotated[str | None, Form()] = None,
     store_id: Annotated[uuid.UUID | None, Form()] = None,
+    role: Annotated[Literal["primary", "auxiliary"], Form()] = "primary",
 ) -> Dataset:
     """Upload a raw file, profile its columns and return a suggested schema mapping.
 
-    The dataset stays in `mapping_required` until the mapping is confirmed via PUT /mapping.
+    * `role=primary` (default): a sales history. Stays in `mapping_required` until PUT /mapping.
+    * `role=auxiliary`: a side table (calendar, prices, store master) referenced by another
+      dataset's `joins`. It is profiled and immediately `ready`; it is never trained on directly.
     """
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXT:
@@ -58,6 +66,7 @@ async def upload_dataset(
         raw_path="",
         status=DatasetStatus.UPLOADED.value,
         progress_pct=0.0,
+        role=role,
     )
     key = ArtifactKeys.dataset_raw(principal.organization_id, ds.id, ds.source_filename)
     size = await run_in_threadpool(storage.put_stream, key, file.file)
@@ -70,9 +79,15 @@ async def upload_dataset(
     ds.raw_path = key
     ds.size_bytes = size
     ds.column_profile = profile
-    ds.suggested_mapping = suggestion
-    ds.status = DatasetStatus.MAPPING_REQUIRED.value
-    ds.stage = "awaiting_mapping"
+    if role == "auxiliary":
+        ds.suggested_mapping = {}
+        ds.status = DatasetStatus.READY.value
+        ds.stage = "auxiliary"
+        ds.progress_pct = 100.0
+    else:
+        ds.suggested_mapping = suggestion
+        ds.status = DatasetStatus.MAPPING_REQUIRED.value
+        ds.stage = "awaiting_mapping"
     db.add(ds)
     await db.commit()
     await db.refresh(ds)
@@ -115,13 +130,23 @@ async def confirm_mapping(
 ) -> JobAccepted:
     """Validate the schema mapping and enqueue Parquet conversion + health diagnostics."""
     ds = await get_owned(db, Dataset, dataset_id, principal.organization_id)
+    if ds.role != "primary":
+        raise PreconditionFailedError("Auxiliary datasets are joined into a primary dataset, not mapped")
     if ds.status in (DatasetStatus.QUEUED, DatasetStatus.PROCESSING):
         raise PreconditionFailedError("Dataset is already being processed")
-    known = {c["name"] for c in ds.column_profile.get("columns", [])}
-    if mapping.layout == "long":
-        missing = sorted(set(mapping.referenced_columns()) - known)
-        if missing:
-            raise DomainValidationError("Mapped columns not in file", details={"missing": missing})
+    known = _profile_columns(ds)
+    missing = sorted(set(mapping.referenced_columns()) - known)
+    if missing:
+        raise DomainValidationError("Mapped columns not in file", details={"missing": missing})
+    for i, j in enumerate(mapping.joins):
+        aux = await get_owned(db, Dataset, j.dataset_id, principal.organization_id)
+        if aux.role != "auxiliary":
+            raise DomainValidationError(f"join #{i + 1}: dataset {aux.id} is not an auxiliary dataset")
+        absent = sorted(set(j.right_on + j.columns) - _profile_columns(aux))
+        if absent:
+            raise DomainValidationError(
+                f"join #{i + 1}: columns not in auxiliary dataset '{aux.name}'", details={"missing": absent}
+            )
     ds.schema_mapping = mapping.model_dump(mode="json")
     ds.status = DatasetStatus.QUEUED.value
     ds.stage = "queued"

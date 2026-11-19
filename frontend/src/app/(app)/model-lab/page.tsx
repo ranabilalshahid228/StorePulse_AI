@@ -41,6 +41,8 @@ export default function ModelLabPage() {
         model_family: f.get("family"),
         name: f.get("name") || null,
         horizon_days: Number(f.get("horizon")),
+        history_days: f.get("history_days") ? Number(f.get("history_days")) : null,
+        use_store_features: f.get("store_features") === "on",
         ...(mode === "tune" ? { n_trials: Number(f.get("trials")), metric: "wape" } : {}),
       },
     });
@@ -60,7 +62,7 @@ export default function ModelLabPage() {
             </CardHeader>
             <CardContent>
               <form
-                className="grid items-end gap-4 md:grid-cols-6"
+                className="grid items-end gap-4 md:grid-cols-4 xl:grid-cols-8"
                 onSubmit={(e: FormEvent<HTMLFormElement>) => {
                   e.preventDefault();
                   submitForm(e.currentTarget, "train");
@@ -83,6 +85,10 @@ export default function ModelLabPage() {
                 <Field label="Run name"><Input name="name" placeholder="optional" /></Field>
                 <Field label="Horizon (days)"><Input name="horizon" type="number" min={1} max={365} defaultValue={42} /></Field>
                 <Field label="Optuna trials"><Input name="trials" type="number" min={1} max={500} defaultValue={30} /></Field>
+                <Field label="Train on last N days" hint="Empty = full history"><Input name="history_days" type="number" min={56} max={3650} placeholder="all" /></Field>
+                <label className="flex h-9 items-center gap-2 self-end text-xs text-muted-foreground">
+                  <input type="checkbox" name="store_features" defaultChecked className="accent-[var(--primary)]" /> Store metadata features
+                </label>
                 <div className="flex gap-2">
                   <Button type="submit" disabled={submit.isPending}><Play /> Train</Button>
                   <Button

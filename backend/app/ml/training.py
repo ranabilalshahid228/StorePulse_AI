@@ -16,7 +16,7 @@ from app.core.config import get_settings
 from app.ml import plots
 from app.ml.data import load_history
 from app.ml.families import FAMILIES, ForecastModel, resolve_device, suggest_params
-from app.ml.features import FeatureSpec, build_features, complete_calendar, training_mask
+from app.ml.features import LAG_STEPS, FeatureSpec, build_features, complete_calendar, training_mask
 from app.ml.metrics import empirical_interval, regression_metrics
 from app.models.enums import ModelFamily
 from app.services.storage import ArtifactKeys, get_storage
@@ -41,14 +41,32 @@ class PreparedData:
 
 
 def prepare_data(
-    parquet_path: Path, mapping: dict[str, Any], horizon: int, validation_days: int, store_code: str | None
+    parquet_path: Path,
+    mapping: dict[str, Any],
+    horizon: int,
+    validation_days: int,
+    store_code: str | None,
+    *,
+    history_days: int | None = None,
+    store_static: dict[str, dict[str, Any]] | None = None,
 ) -> PreparedData:
+    """Load, complete, featurize and split. `history_days` keeps only the most recent N days of
+    targets for training (plus the lag window needed to build their features)."""
     raw = load_history(parquet_path, store_code)
-    spec = FeatureSpec.from_mapping(mapping, horizon)
+    if history_days:
+        spec_probe = FeatureSpec.from_mapping(mapping, horizon)
+        keep = history_days + spec_probe.lag_offset + max(LAG_STEPS) + 28
+        raw = raw[raw["ds"] > raw["ds"].max() - pd.Timedelta(days=keep)]
+    present = set(raw["store_code"].astype(str).unique())
+    spec = FeatureSpec.from_mapping(
+        mapping, horizon, {k: v for k, v in (store_static or {}).items() if k in present}
+    )
     full = complete_calendar(raw)
     feats = build_features(full, spec, fit_categories=True)
     cutoff = feats["ds"].max() - pd.Timedelta(days=validation_days)
     usable = feats[training_mask(feats, spec)]
+    if history_days:
+        usable = usable[usable["ds"] > feats["ds"].max() - pd.Timedelta(days=history_days)]
     tr = usable[usable["ds"] <= cutoff]
     val = usable[usable["ds"] > cutoff]
     if len(tr) < 100 or len(val) < 7:
@@ -169,9 +187,19 @@ def train(
     validation_days: int,
     store_code: str | None,
     progress: ProgressReporter,
+    history_days: int | None = None,
+    store_static: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     progress.update(0.02, "loading_data", force=True)
-    data = prepare_data(parquet_path, mapping, horizon, validation_days, store_code)
+    data = prepare_data(
+        parquet_path,
+        mapping,
+        horizon,
+        validation_days,
+        store_code,
+        history_days=history_days,
+        store_static=store_static,
+    )
     device = resolve_device(get_settings().training_device, FAMILIES[family])
     progress.update(0.1, "training", message=f"device={device}", force=True)
     model, logs, preds = _fit_once(family, data, params, device, progress.sub(0.1, 0.85))
@@ -205,11 +233,21 @@ def tune(
     validation_days: int,
     store_code: str | None,
     progress: ProgressReporter,
+    history_days: int | None = None,
+    store_static: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     import optuna
 
     progress.update(0.02, "loading_data", force=True)
-    data = prepare_data(parquet_path, mapping, horizon, validation_days, store_code)
+    data = prepare_data(
+        parquet_path,
+        mapping,
+        horizon,
+        validation_days,
+        store_code,
+        history_days=history_days,
+        store_static=store_static,
+    )
     device = resolve_device(get_settings().training_device, FAMILIES[family])
     trials: list[dict[str, Any]] = []
     tune_progress = progress.sub(0.08, 0.85)

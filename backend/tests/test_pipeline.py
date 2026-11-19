@@ -24,7 +24,12 @@ HORIZON = 42
 def canonical(rossmann_subset: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
     out = tmp_path_factory.mktemp("canon") / "canonical.parquet"
     stats = convert_to_parquet(
-        rossmann_subset, "csv", SchemaMapping.model_validate(rossmann_mapping()), out, 200_000, lambda f, s: None
+        rossmann_subset,
+        "csv",
+        SchemaMapping.model_validate(rossmann_mapping()),
+        out,
+        200_000,
+        lambda f, s: None,
     )
     assert stats["store_codes"] == ["1", "2", "3"]
     assert stats["series_count"] == 3
@@ -51,10 +56,24 @@ def test_health_report(canonical: Path) -> None:
     assert report["daily_total"]
 
 
-@pytest.mark.parametrize("family", [ModelFamily.SEASONAL_NAIVE, ModelFamily.LIGHTGBM])
+@pytest.mark.parametrize(
+    "family",
+    [
+        ModelFamily.SEASONAL_NAIVE,
+        ModelFamily.LIGHTGBM,
+        pytest.param(
+            ModelFamily.TORCH_MLP,
+            marks=pytest.mark.skipif(
+                not FAMILIES[ModelFamily.TORCH_MLP].is_available(), reason="torch not installed"
+            ),
+        ),
+    ],
+)
 def test_train_and_forecast(canonical: Path, family: ModelFamily, progress, tmp_path: Path) -> None:  # noqa: ANN001
     data = prepare_data(canonical, rossmann_mapping(), HORIZON, HORIZON, None)
-    params = {"num_boost_round": 200} if family == ModelFamily.LIGHTGBM else {}
+    params = {ModelFamily.LIGHTGBM: {"num_boost_round": 200}, ModelFamily.TORCH_MLP: {"max_epochs": 10}}.get(
+        family, {}
+    )
     model, logs, preds = _fit_once(family, data, params, "cpu", progress)
     assert logs and len(preds) == len(data.y_val)
     wape = np.abs(preds - data.y_val).sum() / np.abs(data.y_val).sum()
@@ -66,13 +85,27 @@ def test_train_and_forecast(canonical: Path, family: ModelFamily, progress, tmp_
     np.testing.assert_allclose(loaded.predict(data.X_val), model.predict(data.X_val))
 
     out, summary = run_forecast(
-        model=loaded, metrics={}, parquet_path=canonical, store_code=None, horizon=HORIZON,
+        model=loaded,
+        metrics={},
+        parquet_path=canonical,
+        store_code=None,
+        horizon=HORIZON,
         # The data's final week is a promo week, so carry-forward would already set Promo=1;
         # default it to 0 so the event override is a genuine change vs baseline.
-        covariate_defaults={"Promo": 0}, events=[{"name": "promo-week", "start_date": "2015-08-03",
-                                        "end_date": "2015-08-07", "store_codes": None,
-                                        "overrides": {"Promo": 1}}],
-        compare_to_baseline=True, promo_column="Promo", open_column="Open", progress=progress,
+        covariate_defaults={"Promo": 0},
+        events=[
+            {
+                "name": "promo-week",
+                "start_date": "2015-08-03",
+                "end_date": "2015-08-07",
+                "store_codes": None,
+                "overrides": {"Promo": 1},
+            }
+        ],
+        compare_to_baseline=True,
+        promo_column="Promo",
+        open_column="Open",
+        progress=progress,
     )
     assert len(out) == 3 * HORIZON
     assert out["yhat"].notna().all() and (out["yhat"] >= 0).all()

@@ -241,14 +241,19 @@ class TorchMLPModel(ForecastModel):
         num, cat = self._split(X)
         vnum, vcat = self._split(X_val)
         # Train in log1p space for scale robustness across stores.
-        yt = torch.tensor(np.log1p(np.clip(y, 0, None)), dtype=torch.float32)
+        # Train on a standardized log1p target: scale-robust across stores/items and the output
+        # layer starts at the target mean instead of 0 (avoids a long cold start on small data).
+        log_y = np.log1p(np.clip(y, 0, None))
+        self.y_mu, self.y_sigma = float(log_y.mean()), float(log_y.std() + 1e-6)
+        yt = torch.tensor((log_y - self.y_mu) / self.y_sigma, dtype=torch.float32)
         self.net = self._build().to(dev)
         opt = torch.optim.AdamW(
             self.net.parameters(), lr=self.params["lr"], weight_decay=self.params["weight_decay"]
         )
         loss_fn = torch.nn.MSELoss()
         tn, tc = torch.tensor(num), torch.tensor(cat)
-        bs = int(self.params["batch_size"])
+        # Cap the batch so small datasets still get >= ~50 optimizer steps per epoch.
+        bs = max(64, min(int(self.params["batch_size"]), len(yt) // 50))
         max_epochs = int(self.params["max_epochs"])
         best, best_state, bad = float("inf"), None, 0
         for epoch in range(1, max_epochs + 1):
@@ -263,7 +268,7 @@ class TorchMLPModel(ForecastModel):
                 loss = loss_fn(pred, yt[idx].to(dev))
                 loss.backward()
                 opt.step()
-                total += float(loss) * len(idx)
+                total += loss.item() * len(idx)
             val_pred = self._predict_arrays(vnum, vcat)
             m = regression_metrics(y_val, val_pred)
             entry = {
@@ -297,7 +302,8 @@ class TorchMLPModel(ForecastModel):
                     torch.tensor(num[i : i + 65536]).to(dev), torch.tensor(cat[i : i + 65536]).to(dev)
                 )
                 out.append(p.cpu().numpy())
-        return np.expm1(np.concatenate(out)).clip(min=0)
+        z = np.concatenate(out) * self.y_sigma + self.y_mu
+        return np.expm1(z).clip(min=0)
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         return self._predict_arrays(*self._split(X))
@@ -317,6 +323,8 @@ class TorchMLPModel(ForecastModel):
                     "num_fill": self.num_fill,
                     "num_mean": self.num_mean,
                     "num_std": self.num_std,
+                    "y_mu": self.y_mu,
+                    "y_sigma": self.y_sigma,
                 },
             },
             path,

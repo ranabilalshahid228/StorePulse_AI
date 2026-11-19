@@ -18,6 +18,15 @@ class TrainRequest(BaseModel):
     horizon_days: int = Field(default=42, ge=1, le=365)
     validation_days: int | None = Field(default=None, ge=7, le=365)
     hyperparameters: dict[str, Any] = Field(default_factory=dict)
+    history_days: int | None = Field(
+        default=None, ge=56, le=3650, description="Train only on the most recent N days of targets"
+    )
+    use_store_features: bool = Field(
+        default=True, description="Add store metadata features (type, assortment, competition, promo2)"
+    )
+
+    def training_config(self) -> dict[str, Any]:
+        return {"history_days": self.history_days, "use_store_features": self.use_store_features}
 
 
 class TuneRequest(TrainRequest):
@@ -44,6 +53,7 @@ class ModelRunRead(ORMModel):
     n_trials: int | None
     metrics: dict[str, Any]
     feature_columns: list[str]
+    training_config: dict[str, Any]
     artifact_path: str | None
     plot_paths: list[str]
     inference_ms: float | None

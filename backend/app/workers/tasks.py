@@ -55,6 +55,8 @@ def ingest_dataset(self, dataset_id: str) -> dict:  # noqa: ANN001
         storage = get_storage()
         raw_local = storage.local_path(raw_key)
         out_key = ArtifactKeys.dataset_parquet(org_id, did)
+        progress.update(0.02, "loading_auxiliary_tables", force=True)
+        joins = load_mapping_joins(org_id, mapping)
         with tempfile.TemporaryDirectory() as tmp:
             out_local = Path(tmp) / "canonical.parquet"
             stats = convert_to_parquet(
@@ -64,6 +66,7 @@ def ingest_dataset(self, dataset_id: str) -> dict:  # noqa: ANN001
                 out_local,
                 get_settings().ingestion_chunk_rows,
                 lambda f, stage: progress.update(0.05 + 0.65 * f, stage),
+                joins=joins,
             )
             progress.update(0.72, "uploading_parquet", force=True)
             storage.put_file(out_key, out_local)
@@ -93,6 +96,21 @@ def ingest_dataset(self, dataset_id: str) -> dict:  # noqa: ANN001
         logger.exception("Ingestion failed for %s", did)
         progress.fail(_err(exc), status=DatasetStatus.FAILED.value)
         raise
+
+
+def load_mapping_joins(org_id: uuid.UUID, mapping: SchemaMapping) -> list:
+    """Load every auxiliary table referenced by `mapping.joins` (tenant-scoped)."""
+    from app.services.joins import load_join
+
+    prepared = []
+    for spec in mapping.joins:
+        with sync_session() as s:
+            aux = s.get(Dataset, spec.dataset_id)
+            if aux is None or aux.organization_id != org_id or aux.role != "auxiliary":
+                raise LookupError(f"auxiliary dataset {spec.dataset_id} not found")
+            key, fmt = aux.raw_path, aux.file_format
+        prepared.append(load_join(spec, get_storage().local_path(key), fmt))
+    return prepared
 
 
 def _ensure_stores(org_id: uuid.UUID, codes: list[str], single_store_id: uuid.UUID | None) -> None:
@@ -160,7 +178,32 @@ def _load_run(run_id: uuid.UUID) -> dict:
             "store_code": store.code if store else (ds.store.code if ds.store_id and ds.store else None),
             "parquet_key": ds.parquet_path,
             "mapping": dict(ds.schema_mapping or {}),
+            "history_days": (run.training_config or {}).get("history_days"),
+            "store_static": (
+                _store_static(s, run.organization_id)
+                if (run.training_config or {}).get("use_store_features", True)
+                else {}
+            ),
         }
+
+
+STORE_STATIC_FIELDS = (
+    "store_type",
+    "assortment",
+    "competition_distance",
+    "competition_open_since_month",
+    "competition_open_since_year",
+    "promo2",
+    "promo2_since_week",
+    "promo2_since_year",
+    "promo_interval",
+)
+
+
+def _store_static(s, org_id: uuid.UUID) -> dict[str, dict]:  # noqa: ANN001
+    """Store metadata (e.g. imported from Rossmann store.csv) keyed by store code."""
+    stores = s.scalars(select(Store).where(Store.organization_id == org_id))
+    return {st.code: {f: getattr(st, f) for f in STORE_STATIC_FIELDS} for st in stores}
 
 
 @celery_app.task(name="storepulse.train_model")
@@ -183,6 +226,8 @@ def train_model(run_id: str) -> dict:
             validation_days=ctx["validation_days"],
             store_code=ctx["store_code"],
             progress=progress,
+            history_days=ctx["history_days"],
+            store_static=ctx["store_static"],
         )
         progress.succeed(**result)
         return {"metrics": result["metrics"]}
@@ -216,6 +261,8 @@ def tune_model(run_id: str, metric: str = "wape", timeout_s: int | None = None) 
             validation_days=ctx["validation_days"],
             store_code=ctx["store_code"],
             progress=progress,
+            history_days=ctx["history_days"],
+            store_static=ctx["store_static"],
         )
         progress.succeed(**result)
         return {"best": result["metrics"].get("best_trial")}
@@ -262,6 +309,16 @@ def run_forecast(forecast_id: str) -> dict:
             }
         storage = get_storage()
         model = ForecastModel.load(storage.local_path(ctx["artifact"]))
+        mapping = SchemaMapping.model_validate(ctx["mapping"])
+        joins = load_mapping_joins(ctx["org_id"], mapping) if mapping.joins else []
+
+        def enrich(frame):  # noqa: ANN001, ANN202 - real future covariates from auxiliary tables
+            from app.services.ingestion import coerce_covariates
+            from app.services.joins import apply_joins
+
+            frame = apply_joins(frame, joins) if joins else frame
+            return coerce_covariates(frame.drop(columns=mapping.helper_columns, errors="ignore"), mapping)
+
         sc = ctx["scenario"]
         out, summary = forecasting.run_forecast(
             model=model,
@@ -274,6 +331,8 @@ def run_forecast(forecast_id: str) -> dict:
             compare_to_baseline=sc.get("compare_to_baseline", False),
             promo_column=ctx["mapping"].get("promo_column"),
             open_column=ctx["mapping"].get("open_column"),
+            price_column=ctx["mapping"].get("price_column"),
+            enrich=enrich,
             progress=progress,
         )
         key = ArtifactKeys.forecast_output(ctx["org_id"], fid)

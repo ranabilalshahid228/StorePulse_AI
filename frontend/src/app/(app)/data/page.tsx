@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import type { Dataset } from "@/lib/types";
 import { useDatasets } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
+import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Select, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
 import { EmptyState, ErrorNotice, JobProgress, PageHeader } from "@/components/shared";
 import { formatCompact, formatDateTime } from "@/lib/utils";
 
@@ -35,12 +35,18 @@ export default function DataPage() {
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>Upload dataset</CardTitle>
-          <CardDescription>CSV or Parquet, long format (one row per store/item per day) or M5-style wide format.</CardDescription>
+          <CardDescription>CSV or Parquet. Sales history in long or M5-style wide format; side tables (calendars, price lists) are joined in when you map the sales history.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form key={formKey} onSubmit={onSubmit} className="grid items-end gap-4 md:grid-cols-[1fr_1fr_auto]">
+          <form key={formKey} onSubmit={onSubmit} className="grid items-end gap-4 md:grid-cols-[1fr_12rem_1fr_auto]">
             <Field label="Name">
               <Input name="name" required placeholder="e.g. Rossmann daily sales 2013–2015" />
+            </Field>
+            <Field label="Role">
+              <Select name="role" defaultValue="primary">
+                <option value="primary">Sales history</option>
+                <option value="auxiliary">Side table (calendar, prices…)</option>
+              </Select>
             </Field>
             <Field label="File">
               <Input name="file" type="file" accept=".csv,.parquet" required />
@@ -66,7 +72,10 @@ export default function DataPage() {
                   <TR key={d.id}>
                     <TD>
                       <Link href={`/data/${d.id}`} className="font-medium hover:underline">{d.name}</Link>
-                      <p className="text-xs text-muted-foreground">{d.source_filename}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {d.role === "auxiliary" ? <Badge className="mr-1.5">side table</Badge> : null}
+                        {d.source_filename}
+                      </p>
                     </TD>
                     <TD><JobProgress status={d.status} pct={d.progress_pct} stage={d.stage} /></TD>
                     <TD>{formatCompact(d.row_count)}</TD>

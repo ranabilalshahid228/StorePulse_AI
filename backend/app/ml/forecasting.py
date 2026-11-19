@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import pandas as pd
 
 from app.ml.data import load_history
 from app.ml.families import ForecastModel
-from app.ml.features import SERIES_KEYS, build_features, complete_calendar, future_frame
+from app.ml.features import LAG_STEPS, SERIES_KEYS, build_features, complete_calendar, future_frame
 from app.workers.progress import ProgressReporter
 
 SUMMARY_BUCKETS = (7, 14, 28)
@@ -60,6 +61,8 @@ def run_forecast(
     promo_column: str | None,
     open_column: str | None,
     progress: ProgressReporter,
+    price_column: str | None = None,
+    enrich: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     spec = model.spec
     if horizon > spec.horizon:
@@ -68,11 +71,11 @@ def run_forecast(
     progress.update(0.05, "loading_history", force=True)
     history = complete_calendar(load_history(parquet_path, store_code))
     # Only the trailing window is needed for lag/rolling features.
-    keep_days = spec.lag_offset + max(49, 28) + 7
+    keep_days = spec.lag_offset + max(LAG_STEPS) + 35
     history = history[history["ds"] > history["ds"].max() - pd.Timedelta(days=keep_days + horizon)]
 
     progress.update(0.25, "building_future_frame", force=True)
-    future = future_frame(history, spec, horizon, covariate_defaults)
+    future = future_frame(history, spec, horizon, covariate_defaults, enrich=enrich)
     scenario = _apply_events(future, events, set(spec.known_future)) if events else future.assign(event=None)
 
     progress.update(0.45, "predicting", force=True)
@@ -87,6 +90,7 @@ def run_forecast(
         out["yhat_lower"] = np.nan
         out["yhat_upper"] = np.nan
     out["is_promo"] = scenario[promo_column].fillna(0).astype(float) > 0 if promo_column else False
+    out["price"] = scenario[price_column].astype(float) if price_column else np.nan
     out["is_open"] = scenario[open_column].fillna(1).astype(float) > 0 if open_column else True
 
     if events and compare_to_baseline:
