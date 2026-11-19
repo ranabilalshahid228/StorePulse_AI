@@ -1,12 +1,16 @@
 """Model families. Each implements fit / predict / save / load over the shared feature frame.
 
 Add a family: subclass `ForecastModel`, register it in `FAMILIES`, add a default search space,
-and add the enum value in `app.models.enums.ModelFamily`.
+add the enum value in `app.models.enums.ModelFamily` and in the frontend `types.ts`.
+
+Models receive the full prepared frame and select their own inputs via `input_columns`
+(tabular models ignore the `seq_*` window that sequence models consume).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import io
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -19,12 +23,20 @@ import numpy as np
 import pandas as pd
 
 from app.ml.features import FeatureSpec
-from app.ml.metrics import regression_metrics
+from app.ml.metrics import QUANTILE_LEVELS, regression_metrics
 from app.models.enums import ModelFamily
 
 logger = logging.getLogger(__name__)
 
 EpochCallback = Callable[[dict[str, Any], float], None]  # (log_entry, fraction_done)
+INTERMITTENT_ZERO_SHARE = 0.3
+
+
+def is_intermittent(y: np.ndarray) -> bool:
+    """Zero-heavy, non-negative targets (e.g. M5 item-day units) get count-appropriate losses."""
+    y = np.asarray(y, dtype="float64")
+    y = y[~np.isnan(y)]
+    return bool(len(y)) and float(y.min()) >= 0 and float((y == 0).mean()) > INTERMITTENT_ZERO_SHARE
 
 
 class ForecastModel(ABC):
@@ -44,6 +56,14 @@ class ForecastModel(ABC):
     def is_available(cls) -> bool:
         return True
 
+    @classmethod
+    def required_seq_len(cls, params: dict[str, Any]) -> int:
+        return 0
+
+    @property
+    def input_columns(self) -> list[str]:
+        return self.spec.feature_columns
+
     @abstractmethod
     def fit(
         self, X: pd.DataFrame, y: np.ndarray, X_val: pd.DataFrame, y_val: np.ndarray, on_epoch: EpochCallback
@@ -51,6 +71,10 @@ class ForecastModel(ABC):
 
     @abstractmethod
     def predict(self, X: pd.DataFrame) -> np.ndarray: ...
+
+    def predict_quantiles(self, X: pd.DataFrame) -> dict[float, np.ndarray] | None:
+        """P10/P50/P90 when the model learns them directly; None -> empirical interval is used."""
+        return None
 
     def feature_importance(self) -> dict[str, float] | None:
         return None
@@ -81,13 +105,8 @@ class SeasonalNaiveModel(ForecastModel):
         return [f"lag_{o + 7 * k}" for k in range(int(self.params["weeks"]))]
 
     def fit(self, X, y, X_val, y_val, on_epoch) -> None:  # noqa: ANN001 - nothing to learn
-        on_epoch(
-            {
-                "epoch": 1,
-                **{f"val_{k}": v for k, v in regression_metrics(y_val, self.predict(X_val)).items()},
-            },
-            1.0,
-        )
+        m = regression_metrics(y_val, self.predict(X_val))
+        on_epoch({"epoch": 1, **{f"val_{k}": v for k, v in m.items()}}, 1.0)
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         return np.nan_to_num(X[self._cols()].mean(axis=1).to_numpy(dtype="float64"), nan=0.0)
@@ -98,9 +117,14 @@ class SeasonalNaiveModel(ForecastModel):
 
 class LightGBMModel(ForecastModel):
     family = ModelFamily.LIGHTGBM
-    description = "Gradient-boosted trees (LightGBM) on calendar, lag, rolling and covariate features."
+    description = (
+        "Gradient-boosted trees (LightGBM). objective=auto picks Tweedie for zero-heavy targets; "
+        "optional quantile boosters give P10/P50/P90 intervals."
+    )
     default_params = {
-        "objective": "regression",
+        "objective": "auto",  # auto | regression | tweedie | poisson
+        "tweedie_variance_power": 1.3,
+        "quantiles": "auto",  # auto (on for intermittent targets) | true | false
         "learning_rate": 0.05,
         "num_leaves": 63,
         "min_data_in_leaf": 50,
@@ -119,39 +143,93 @@ class LightGBMModel(ForecastModel):
         "bagging_fraction": {"type": "float", "low": 0.5, "high": 1.0},
         "lambda_l2": {"type": "float", "low": 1e-3, "high": 10.0, "log": True},
         "objective": {"type": "categorical", "choices": ["regression", "tweedie", "poisson"]},
+        "tweedie_variance_power": {"type": "float", "low": 1.05, "high": 1.9},
+        "quantiles": {"type": "categorical", "choices": [False]},  # tune the point model only
     }
+    _NON_LGB = (
+        "num_boost_round",
+        "early_stopping_rounds",
+        "quantiles",
+        "best_iteration",
+        "resolved_objective",
+    )
+
+    def _lgb_params(self, objective: str) -> dict[str, Any]:
+        p = {k: v for k, v in self.params.items() if k not in self._NON_LGB}
+        p["objective"] = objective
+        if objective != "tweedie":
+            p.pop("tweedie_variance_power", None)
+        p.update({"verbosity": -1, "seed": 42})
+        return p
 
     def fit(self, X, y, X_val, y_val, on_epoch) -> None:  # noqa: ANN001
         import lightgbm as lgb
 
-        params = dict(self.params)
-        rounds = int(params.pop("num_boost_round"))
-        es = int(params.pop("early_stopping_rounds"))
-        params.update({"verbosity": -1, "metric": ["l1", "l2"], "seed": 42})
+        X, X_val = X[self.input_columns], X_val[self.input_columns]
+        intermittent = is_intermittent(y)
+        objective = self.params["objective"]
+        if objective == "auto":
+            objective = "tweedie" if intermittent else "regression"
+        self.params["resolved_objective"] = objective
+        want_q = self.params.get("quantiles", "auto")
+        self.quantile_enabled = bool(intermittent) if want_q == "auto" else bool(want_q)
+
+        rounds = int(self.params["num_boost_round"])
+        es = int(self.params["early_stopping_rounds"])
         cats = [c for c in self.spec.categorical_features if c in X.columns]
         dtrain = lgb.Dataset(X, y, categorical_feature=cats, free_raw_data=False)
         dval = lgb.Dataset(X_val, y_val, reference=dtrain)
+        n_models = 1 + (len(QUANTILE_LEVELS) if self.quantile_enabled else 0)
 
-        def _log(env: Any) -> None:
-            it = env.iteration + 1
-            if it % 25 == 0 or it == 1:
-                entry = {"epoch": it}
-                for _, name, value, _ in env.evaluation_result_list:
-                    entry[f"val_{name}"] = float(value)
-                on_epoch(entry, it / rounds)
+        def logger_for(stage: int, prefix: str) -> Callable[[Any], None]:
+            def _log(env: Any) -> None:
+                it = env.iteration + 1
+                if it % 25 == 0 or it == 1:
+                    entry: dict[str, Any] = {"epoch": it, "model": prefix}
+                    for _, name, value, _ in env.evaluation_result_list:
+                        entry[f"val_{name}"] = float(value)
+                    on_epoch(entry, (stage + it / rounds) / n_models)
+
+            return _log
 
         self.booster = lgb.train(
-            params,
+            {**self._lgb_params(objective), "metric": ["l1", "l2"]},
             dtrain,
             num_boost_round=rounds,
             valid_sets=[dval],
             valid_names=["val"],
-            callbacks=[lgb.early_stopping(es, verbose=False), _log],
+            callbacks=[lgb.early_stopping(es, verbose=False), logger_for(0, "point")],
         )
         self.params["best_iteration"] = int(self.booster.best_iteration or rounds)
 
+        self.q_boosters: dict[float, Any] = {}
+        if self.quantile_enabled:
+            for i, q in enumerate(QUANTILE_LEVELS, start=1):
+                params = {**self._lgb_params("quantile"), "alpha": q, "metric": "quantile"}
+                self.q_boosters[q] = lgb.train(
+                    params,
+                    dtrain,
+                    num_boost_round=rounds,
+                    valid_sets=[dval],
+                    valid_names=["val"],
+                    callbacks=[lgb.early_stopping(es, verbose=False), logger_for(i, f"p{round(q * 100)}")],
+                )
+
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return self.booster.predict(X, num_iteration=self.booster.best_iteration)
+        return self.booster.predict(X[self.input_columns], num_iteration=self.booster.best_iteration)
+
+    def predict_quantiles(self, X: pd.DataFrame) -> dict[float, np.ndarray] | None:
+        if not getattr(self, "q_boosters", None):
+            return None
+        Xi = X[self.input_columns]
+        raw = np.column_stack(
+            [
+                np.clip(b.predict(Xi, num_iteration=b.best_iteration), 0, None)
+                for b in self.q_boosters.values()
+            ]
+        )
+        raw.sort(axis=1)  # remove quantile crossing
+        return {q: raw[:, i] for i, q in enumerate(self.q_boosters)}
 
     def feature_importance(self) -> dict[str, float]:
         gains = self.booster.feature_importance(importance_type="gain")
@@ -175,6 +253,7 @@ class TorchMLPModel(ForecastModel):
         "max_epochs": 30,
         "patience": 5,
         "embedding_dim": 8,
+        "loss": "auto",  # auto (poisson for intermittent targets) | log_mse | poisson
     }
     search_space = {
         "lr": {"type": "float", "low": 1e-4, "high": 1e-2, "log": True},
@@ -182,6 +261,7 @@ class TorchMLPModel(ForecastModel):
         "weight_decay": {"type": "float", "low": 1e-7, "high": 1e-3, "log": True},
         "batch_size": {"type": "categorical", "choices": [1024, 2048, 4096, 8192]},
         "embedding_dim": {"type": "categorical", "choices": [4, 8, 16]},
+        "loss": {"type": "categorical", "choices": ["log_mse", "poisson"]},
     }
 
     @classmethod
@@ -189,14 +269,14 @@ class TorchMLPModel(ForecastModel):
         return importlib.util.find_spec("torch") is not None
 
     # -- tensor prep -----------------------------------------------------------------------
-    def _split(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-        cats = [c for c in self.spec.categorical_features if c in X.columns]
-        nums = [c for c in X.columns if c not in cats]
+    def _tabular(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        cols = self.spec.feature_columns
         if not hasattr(self, "num_cols"):
-            self.cat_cols, self.num_cols = cats, nums
-            num = X[nums].to_numpy(dtype="float32")
-            self.num_fill = np.nanmedian(num, axis=0)
-            self.num_fill = np.where(np.isnan(self.num_fill), 0.0, self.num_fill).astype("float32")
+            self.cat_cols = [c for c in self.spec.categorical_features if c in cols]
+            self.num_cols = [c for c in cols if c not in self.cat_cols]
+            num = X[self.num_cols].to_numpy(dtype="float32")
+            fill = np.nanmedian(num, axis=0)
+            self.num_fill = np.where(np.isnan(fill), 0.0, fill).astype("float32")
             filled = np.where(np.isnan(num), self.num_fill, num)
             self.num_mean = filled.mean(axis=0)
             self.num_std = filled.std(axis=0) + 1e-6
@@ -204,6 +284,13 @@ class TorchMLPModel(ForecastModel):
         num = (np.where(np.isnan(num), self.num_fill, num) - self.num_mean) / self.num_std
         cat = np.stack([X[c].cat.codes.to_numpy() + 1 for c in self.cat_cols], axis=1).astype("int64")
         return num.astype("float32"), cat  # code 0 == unknown/missing
+
+    def _inputs(self, X: pd.DataFrame) -> tuple[np.ndarray, ...]:
+        return self._tabular(X)
+
+    def _encoder(self, nn: Any) -> tuple[Any, int]:
+        """Optional extra encoder (sequence models); returns (module or None, output width)."""
+        return None, 0
 
     def _build(self) -> Any:
         import torch
@@ -214,44 +301,69 @@ class TorchMLPModel(ForecastModel):
         hidden = list(self.params["hidden_sizes"])
         dropout = float(self.params["dropout"])
         n_num = len(self.num_cols)
+        encoder, enc_dim = self._encoder(nn)
+        bias_init = float(getattr(self, "y_bias_init", 0.0))
 
         class Net(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
                 self.embs = nn.ModuleList([nn.Embedding(c, min(emb_dim, c)) for c in cards])
-                in_dim = n_num + sum(min(emb_dim, c) for c in cards)
+                self.encoder = encoder
+                in_dim = n_num + sum(min(emb_dim, c) for c in cards) + enc_dim
                 layers: list[nn.Module] = []
                 for h in hidden:
                     layers += [nn.Linear(in_dim, h), nn.ReLU(), nn.Dropout(dropout)]
                     in_dim = h
-                layers.append(nn.Linear(in_dim, 1))
+                head = nn.Linear(in_dim, 1)
+                nn.init.constant_(head.bias, bias_init)
+                layers.append(head)
                 self.mlp = nn.Sequential(*layers)
 
-            def forward(self, num: torch.Tensor, cat: torch.Tensor) -> torch.Tensor:
-                embs = [e(cat[:, i]) for i, e in enumerate(self.embs)]
-                return self.mlp(torch.cat([num, *embs], dim=1)).squeeze(1)
+            def forward(self, num: torch.Tensor, cat: torch.Tensor, *extra: torch.Tensor) -> torch.Tensor:
+                parts = [num, *[e(cat[:, i]) for i, e in enumerate(self.embs)]]
+                if self.encoder is not None:
+                    parts.append(self.encoder(*extra))
+                return self.mlp(torch.cat(parts, dim=1)).squeeze(1)
 
         return Net()
+
+    # -- training --------------------------------------------------------------------------
+    def _target(self, y: np.ndarray) -> np.ndarray:
+        y = np.clip(np.asarray(y, dtype="float64"), 0, None)
+        if self.loss_kind == "poisson":
+            # Network outputs log-rate; start at log(mean) so early epochs aren't spent on the level.
+            self.y_bias_init = float(np.log(max(y.mean(), 1e-6)))
+            return y
+        # Standardized log1p: scale-robust across stores/items; output starts at the target mean.
+        log_y = np.log1p(y)
+        self.y_mu, self.y_sigma = float(log_y.mean()), float(log_y.std() + 1e-6)
+        self.y_bias_init = 0.0
+        return (log_y - self.y_mu) / self.y_sigma
+
+    def _decode(self, z: np.ndarray) -> np.ndarray:
+        if self.loss_kind == "poisson":
+            return np.exp(np.clip(z, -20, 20))
+        return np.expm1(z * self.y_sigma + self.y_mu).clip(min=0)
 
     def fit(self, X, y, X_val, y_val, on_epoch) -> None:  # noqa: ANN001
         import torch
 
         torch.manual_seed(42)
         dev = torch.device(self.device)
-        num, cat = self._split(X)
-        vnum, vcat = self._split(X_val)
-        # Train in log1p space for scale robustness across stores.
-        # Train on a standardized log1p target: scale-robust across stores/items and the output
-        # layer starts at the target mean instead of 0 (avoids a long cold start on small data).
-        log_y = np.log1p(np.clip(y, 0, None))
-        self.y_mu, self.y_sigma = float(log_y.mean()), float(log_y.std() + 1e-6)
-        yt = torch.tensor((log_y - self.y_mu) / self.y_sigma, dtype=torch.float32)
+        requested = self.params.get("loss", "auto")
+        self.loss_kind = (
+            ("poisson" if is_intermittent(y) else "log_mse") if requested == "auto" else requested
+        )
+        train_arrays = [torch.tensor(a) for a in self._inputs(X)]
+        val_arrays = self._inputs(X_val)
+        yt = torch.tensor(self._target(y), dtype=torch.float32)
         self.net = self._build().to(dev)
         opt = torch.optim.AdamW(
             self.net.parameters(), lr=self.params["lr"], weight_decay=self.params["weight_decay"]
         )
-        loss_fn = torch.nn.MSELoss()
-        tn, tc = torch.tensor(num), torch.tensor(cat)
+        loss_fn = (
+            torch.nn.PoissonNLLLoss(log_input=True) if self.loss_kind == "poisson" else torch.nn.MSELoss()
+        )
         # Cap the batch so small datasets still get >= ~50 optimizer steps per epoch.
         bs = max(64, min(int(self.params["batch_size"]), len(yt) // 50))
         max_epochs = int(self.params["max_epochs"])
@@ -264,13 +376,13 @@ class TorchMLPModel(ForecastModel):
             for i in range(0, len(perm), bs):
                 idx = perm[i : i + bs]
                 opt.zero_grad()
-                pred = self.net(tn[idx].to(dev), tc[idx].to(dev))
+                pred = self.net(*[a[idx].to(dev) for a in train_arrays])
                 loss = loss_fn(pred, yt[idx].to(dev))
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), 5.0)
                 opt.step()
                 total += loss.item() * len(idx)
-            val_pred = self._predict_arrays(vnum, vcat)
-            m = regression_metrics(y_val, val_pred)
+            m = regression_metrics(y_val, self._predict_arrays(val_arrays))
             entry = {
                 "epoch": epoch,
                 "train_loss": total / len(yt),
@@ -290,64 +402,262 @@ class TorchMLPModel(ForecastModel):
         if best_state is not None:
             self.net.load_state_dict(best_state)
 
-    def _predict_arrays(self, num: np.ndarray, cat: np.ndarray) -> np.ndarray:
+    def _predict_arrays(self, arrays: tuple[np.ndarray, ...]) -> np.ndarray:
         import torch
 
         dev = next(self.net.parameters()).device
         self.net.eval()
         out = []
         with torch.no_grad():
-            for i in range(0, len(num), 65536):
-                p = self.net(
-                    torch.tensor(num[i : i + 65536]).to(dev), torch.tensor(cat[i : i + 65536]).to(dev)
-                )
-                out.append(p.cpu().numpy())
-        z = np.concatenate(out) * self.y_sigma + self.y_mu
-        return np.expm1(z).clip(min=0)
+            for i in range(0, len(arrays[0]), 65536):
+                out.append(self.net(*[torch.tensor(a[i : i + 65536]).to(dev) for a in arrays]).cpu().numpy())
+        return self._decode(np.concatenate(out))
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return self._predict_arrays(*self._split(X))
+        return self._predict_arrays(self._inputs(X))
+
+    # -- persistence -----------------------------------------------------------------------
+    _PREP = (
+        "cat_cols",
+        "num_cols",
+        "num_fill",
+        "num_mean",
+        "num_std",
+        "loss_kind",
+        "y_mu",
+        "y_sigma",
+        "y_bias_init",
+        "seq_mean",
+        "seq_std",
+    )
+
+    def _blob(self) -> dict[str, Any]:
+        return {
+            "family": self.family.value,
+            "spec": self.spec.to_dict(),
+            "params": self.params,
+            "state_dict": {k: v.detach().cpu() for k, v in self.net.state_dict().items()},
+            "prep": {k: getattr(self, k) for k in self._PREP if hasattr(self, k)},
+        }
+
+    @staticmethod
+    def _from_blob(blob: dict[str, Any], device: str | None = None) -> TorchMLPModel:
+        import torch
+
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        cls = FAMILIES[ModelFamily(blob["family"])]
+        model = cls(FeatureSpec(**blob["spec"]), blob["params"], device=device)
+        for k, v in blob["prep"].items():
+            setattr(model, k, v)
+        model.loss_kind = blob["prep"].get("loss_kind", "log_mse")
+        model.net = model._build().to(device)
+        model.net.load_state_dict(blob["state_dict"])
+        return model  # type: ignore[return-value]
 
     def save(self, path: Path) -> None:
         import torch
 
-        torch.save(
-            {
-                "family": self.family.value,
-                "spec": self.spec.to_dict(),
-                "params": self.params,
-                "state_dict": self.net.state_dict(),
-                "prep": {
-                    "cat_cols": self.cat_cols,
-                    "num_cols": self.num_cols,
-                    "num_fill": self.num_fill,
-                    "num_mean": self.num_mean,
-                    "num_std": self.num_std,
-                    "y_mu": self.y_mu,
-                    "y_sigma": self.y_sigma,
-                },
-            },
-            path,
-        )
+        torch.save(self._blob(), path)
 
     @classmethod
     def load_pt(cls, path: Path) -> TorchMLPModel:
         import torch
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        blob = torch.load(path, map_location=device, weights_only=False)
-        model = cls(FeatureSpec(**blob["spec"]), blob["params"], device=device)
-        for k, v in blob["prep"].items():
-            setattr(model, k, v)
-        model.net = model._build().to(device)
-        model.net.load_state_dict(blob["state_dict"])
-        return model
+        return TorchMLPModel._from_blob(torch.load(path, map_location="cpu", weights_only=False))
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Picklable (e.g. inside an ensemble): the locally-defined Net is stored as a torch blob."""
+        import torch
+
+        buf = io.BytesIO()
+        torch.save(self._blob(), buf)
+        return {"_torch_blob": buf.getvalue()}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        import torch
+
+        blob = torch.load(io.BytesIO(state["_torch_blob"]), map_location="cpu", weights_only=False)
+        self.__dict__.update(TorchMLPModel._from_blob(blob).__dict__)
+
+
+class TorchGRUModel(TorchMLPModel):
+    family = ModelFamily.TORCH_GRU
+    description = (
+        "Sequence forecaster: a GRU reads the last `seq_len` days of the series (ending at the lag "
+        "origin, scale-normalized) and is fused with the tabular embedding/MLP path."
+    )
+    default_params = {
+        **TorchMLPModel.default_params,
+        "seq_len": 56,
+        "gru_hidden": 64,
+        "gru_layers": 1,
+        "hidden_sizes": [128, 64],
+    }
+    search_space = {
+        **TorchMLPModel.search_space,
+        "gru_hidden": {"type": "categorical", "choices": [32, 64, 128]},
+        "seq_len": {"type": "categorical", "choices": [28, 56]},
+    }
+
+    @classmethod
+    def required_seq_len(cls, params: dict[str, Any]) -> int:
+        return int({**cls.default_params, **params}["seq_len"])
+
+    @property
+    def input_columns(self) -> list[str]:
+        return self.spec.model_columns
+
+    def _inputs(self, X: pd.DataFrame) -> tuple[np.ndarray, ...]:
+        num, cat = self._tabular(X)
+        L = int(self.params["seq_len"])
+        cols = [f"seq_{k}" for k in reversed(range(L))]  # oldest -> newest
+        seq = X[cols].to_numpy(dtype="float32")
+        missing = np.isnan(seq)
+        seq = np.where(missing, 0.0, np.clip(seq, 0, None))
+        # Per-row scale normalization; the level itself is in the tabular path (rolling means, lags).
+        scale = seq.mean(axis=1, keepdims=True) + 1.0
+        x = np.stack([np.log1p(seq / scale), missing.astype("float32")], axis=2).astype("float32")
+        return num, cat, x
+
+    def _encoder(self, nn: Any) -> tuple[Any, int]:
+        hidden, layers = int(self.params["gru_hidden"]), int(self.params["gru_layers"])
+
+        class SeqEncoder(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.gru = nn.GRU(input_size=2, hidden_size=hidden, num_layers=layers, batch_first=True)
+
+            def forward(self, x: Any) -> Any:
+                _, h = self.gru(x)
+                return h[-1]
+
+        return SeqEncoder(), hidden
+
+
+# ----------------------------------------------------------------------------------------
+
+
+class EnsembleModel(ForecastModel):
+    family = ModelFamily.ENSEMBLE
+    description = (
+        "Weighted blend of member models (default LightGBM + GRU). Weights are fitted on the first half "
+        "of the validation window; members and blend are compared on the untouched second half."
+    )
+    supports_gpu = True
+    default_params = {
+        "members": ["lightgbm", "torch_gru"],
+        "member_params": {},
+        "weights": "auto",  # auto | list of floats aligned with members
+        "weight_metric": "wape",
+    }
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return all(FAMILIES[ModelFamily(m)].is_available() for m in cls.default_params["members"])
+
+    @classmethod
+    def required_seq_len(cls, params: dict[str, Any]) -> int:
+        p = {**cls.default_params, **params}
+        return max(
+            FAMILIES[ModelFamily(m)].required_seq_len(p["member_params"].get(m, {})) for m in p["members"]
+        )
+
+    @property
+    def input_columns(self) -> list[str]:
+        return self.spec.model_columns
+
+    def fit(self, X, y, X_val, y_val, on_epoch) -> None:  # noqa: ANN001
+        names: list[str] = list(self.params["members"])
+        if len(names) < 2 or ModelFamily.ENSEMBLE.value in names:
+            raise ValueError("ensemble needs >= 2 non-ensemble members")
+        self.members: list[ForecastModel] = []
+        val_preds = []
+        for i, name in enumerate(names):
+            fam = FAMILIES[ModelFamily(name)]
+            member = fam(
+                self.spec,
+                self.params["member_params"].get(name, {}),
+                device=self.device if fam.supports_gpu else "cpu",
+            )
+
+            def member_epoch(entry: dict[str, Any], frac: float, i: int = i, name: str = name) -> None:
+                on_epoch({**entry, "member": name}, (i + frac) / len(names))
+
+            member.fit(X, y, X_val, y_val, member_epoch)
+            self.members.append(member)
+            val_preds.append(np.clip(member.predict(X_val), 0, None))
+        P = np.column_stack(val_preds)
+
+        # Split the validation window by date: fit weights on A (earlier), compare on B (later).
+        order = X_val["year"].to_numpy(dtype="int64") * 400 + X_val["dayofyear"].to_numpy(dtype="int64")
+        in_a = order <= np.median(order)
+        if self.params["weights"] == "auto":
+            w = self._fit_weights(P[in_a], np.asarray(y_val)[in_a])
+        else:
+            w = np.asarray(self.params["weights"], dtype="float64")
+            if len(w) != len(names) or w.min() < 0 or w.sum() <= 0:
+                raise ValueError("weights must be non-negative and match members")
+            w = w / w.sum()
+        self.weights = w
+        self.params["fitted_weights"] = dict(zip(names, map(float, w), strict=True))
+
+        yb = np.asarray(y_val)[~in_a]
+        metric = self.params["weight_metric"]
+        comparison = {name: regression_metrics(yb, P[~in_a, i]) for i, name in enumerate(names)}
+        comparison["equal_weight_blend"] = regression_metrics(yb, P[~in_a].mean(axis=1))
+        comparison["fitted_blend"] = regression_metrics(yb, P[~in_a] @ w)
+        self.comparison = {
+            "weights": self.params["fitted_weights"],
+            "weight_metric": metric,
+            "weights_fitted_on": "validation first half",
+            "compared_on": "validation second half",
+            "holdout_rows": int((~in_a).sum()),
+            "models": {
+                k: {m: v[m] for m in ("wape", "rmse", "mae", "bias_pct", "r2")} for k, v in comparison.items()
+            },
+        }
+
+    def _fit_weights(self, P: np.ndarray, y: np.ndarray) -> np.ndarray:
+        metric = self.params["weight_metric"]
+
+        def score(w: np.ndarray) -> float:
+            v = regression_metrics(y, P @ w)[metric]
+            return float("inf") if v is None else float(v)
+
+        if P.shape[1] == 2:
+            grid = [np.array([a, 1 - a]) for a in np.linspace(0, 1, 21)]
+            return min(grid, key=score)
+        from scipy.optimize import nnls
+
+        w, _ = nnls(P, y)
+        return w / w.sum() if w.sum() > 0 else np.full(P.shape[1], 1 / P.shape[1])
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return np.column_stack([np.clip(m.predict(X), 0, None) for m in self.members]) @ self.weights
+
+    def predict_quantiles(self, X: pd.DataFrame) -> dict[float, np.ndarray] | None:
+        """Weighted average over members that learn quantiles (the GBDT quantile boosters)."""
+        parts = [(w, m.predict_quantiles(X)) for w, m in zip(self.weights, self.members, strict=True)]
+        parts = [(w, q) for w, q in parts if q is not None and w > 0]
+        if not parts:
+            return None
+        total = sum(w for w, _ in parts)
+        return {lvl: sum(w * q[lvl] for w, q in parts) / total for lvl in parts[0][1]}
+
+    def feature_importance(self) -> dict[str, float] | None:
+        for m in self.members:
+            fi = m.feature_importance()
+            if fi:
+                return fi
+        return None
 
 
 FAMILIES: dict[ModelFamily, type[ForecastModel]] = {
     ModelFamily.SEASONAL_NAIVE: SeasonalNaiveModel,
     ModelFamily.LIGHTGBM: LightGBMModel,
     ModelFamily.TORCH_MLP: TorchMLPModel,
+    ModelFamily.TORCH_GRU: TorchGRUModel,
+    ModelFamily.ENSEMBLE: EnsembleModel,
 }
 
 

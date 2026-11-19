@@ -33,7 +33,9 @@ def _apply_events(frame: pd.DataFrame, events: list[dict[str, Any]], allowed: se
     return frame
 
 
-def _predict(model: ForecastModel, history: pd.DataFrame, future: pd.DataFrame) -> np.ndarray:
+def _predict(
+    model: ForecastModel, history: pd.DataFrame, future: pd.DataFrame
+) -> tuple[np.ndarray, dict[float, np.ndarray] | None]:
     spec = model.spec
     # Tag future rows with their position so predictions map back without a (dtype-unsafe) merge.
     hist = history.assign(_row=-1)
@@ -42,10 +44,19 @@ def _predict(model: ForecastModel, history: pd.DataFrame, future: pd.DataFrame) 
     combined = combined.sort_values([*SERIES_KEYS, "ds"], ignore_index=True)
     feats = build_features(combined, spec, fit_categories=False)
     fut = feats[feats["_row"] >= 0]
-    preds = np.clip(model.predict(fut[spec.feature_columns]), 0, None)
+    X = fut[spec.model_columns]
+    rows = fut["_row"].to_numpy(dtype="int64")
     out = np.full(len(future), np.nan)
-    out[fut["_row"].to_numpy(dtype="int64")] = preds
-    return out
+    out[rows] = np.clip(model.predict(X), 0, None)
+    q = model.predict_quantiles(X)
+    quantiles = None
+    if q:
+        quantiles = {}
+        for level, values in q.items():
+            arr = np.full(len(future), np.nan)
+            arr[rows] = values
+            quantiles[level] = arr
+    return out, quantiles
 
 
 def run_forecast(
@@ -62,6 +73,7 @@ def run_forecast(
     open_column: str | None,
     progress: ProgressReporter,
     price_column: str | None = None,
+    scope_store_code: str | None = None,
     enrich: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     spec = model.spec
@@ -69,9 +81,11 @@ def run_forecast(
         raise ValueError(f"Requested horizon {horizon} exceeds the model's trained horizon {spec.horizon}")
 
     progress.update(0.05, "loading_history", force=True)
-    history = complete_calendar(load_history(parquet_path, store_code))
+    # Load the model's training scope (group aggregates are computed across it), filter output later.
+    history = complete_calendar(load_history(parquet_path, scope_store_code))
     # Only the trailing window is needed for lag/rolling features.
-    keep_days = spec.lag_offset + max(LAG_STEPS) + 35
+    # Longest look-back: 364-day trailing price max (and 91-day intermittency / seq windows).
+    keep_days = spec.lag_offset + max(max(LAG_STEPS), spec.seq_len, 364) + 35
     history = history[history["ds"] > history["ds"].max() - pd.Timedelta(days=keep_days + horizon)]
 
     progress.update(0.25, "building_future_frame", force=True)
@@ -79,11 +93,16 @@ def run_forecast(
     scenario = _apply_events(future, events, set(spec.known_future)) if events else future.assign(event=None)
 
     progress.update(0.45, "predicting", force=True)
-    yhat = _predict(model, history, scenario)
+    yhat, quantiles = _predict(model, history, scenario)
     out = scenario[["ds", "store_code", "item_id", "event"]].copy()
     out["yhat"] = yhat
     interval = metrics.get("interval")
-    if interval:
+    out["yhat_p50"] = np.nan
+    if quantiles:
+        out["yhat_lower"] = quantiles[min(quantiles)]
+        out["yhat_upper"] = quantiles[max(quantiles)]
+        out["yhat_p50"] = quantiles.get(0.5, np.nan)
+    elif interval and "lower" in interval:
         out["yhat_lower"] = np.clip(yhat * (1 + interval["lower"]), 0, None)
         out["yhat_upper"] = yhat * (1 + interval["upper"])
     else:
@@ -95,11 +114,13 @@ def run_forecast(
 
     if events and compare_to_baseline:
         progress.update(0.7, "predicting_baseline", force=True)
-        out["baseline_yhat"] = _predict(model, history, future.assign(event=None))
+        out["baseline_yhat"] = _predict(model, history, future.assign(event=None))[0]
     else:
         out["baseline_yhat"] = np.nan
 
     progress.update(0.9, "summarizing", force=True)
+    if store_code is not None:
+        out = out[out["store_code"] == store_code].reset_index(drop=True)
     out["item_id"] = out["item_id"].replace("", None)
     out["ds"] = out["ds"].dt.date
     return out, summarize(out, horizon)

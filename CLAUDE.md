@@ -200,22 +200,50 @@ python -m scripts.run_pipeline rossmann --stores 1 2 3 --families lightgbm --no-
 - Canonical long format; `ml/features.py::complete_calendar` reindexes each series to a contiguous
   daily calendar before lags. All features are vectorized across series (integer group ids +
   groupby/rolling, float32) — an M5 store (3,049 items) featurizes in seconds.
-- Features: calendar, weekday-aligned lags (offset+0/7/14/21/49), rolling mean/std/zero-share, same-weekday
-  4-week mean, known-future covariates, price features (vs trailing 28-day mean, 7-day change), store
-  metadata features, categorical ids. Training options per run (`training_config`): `history_days`,
-  `use_store_features`.
-- **Direct multi-horizon, leakage-free:** every lag/rolling feature is offset by
+- **Direct multi-horizon, leakage-free:** every target-derived feature reads the target shifted by
   `lag_offset = ceil(horizon/7)*7`, so any day ≤ horizon ahead is predictable from history alone. A
   model trained for horizon H can forecast ≤ H days (enforced by the API).
-- Validation = last `validation_days` (default = horizon). Metrics: MAE, RMSE, WAPE, MAPE, sMAPE,
-  RMSPE (Rossmann), bias. Prediction intervals = empirical relative-residual quantiles from validation (90%).
-- Families (`ml/families.py`): `seasonal_naive` (baseline), `lightgbm`, `torch_mlp` (embeddings, CUDA).
-  Add one: subclass `ForecastModel`, add to `FAMILIES` + `ModelFamily` enum + frontend `types.ts`.
+  `tests/test_models_metrics.py::test_target_features_are_leak_free` scrambles all targets after a
+  cutoff and asserts no target-derived feature changes for rows whose lag origin is ≤ cutoff —
+  extend its prefix list whenever you add a target-derived feature.
+- Features (`build_features`):
+  - calendar; weekday-aligned lags (offset+0/7/14/21/49); rolling mean 7/28, std 28, zero share 28;
+    same-weekday 4-week mean
+  - intermittent demand: non-zero rate 28/91, Croston-style mean non-zero size 91, days since last sale
+  - price (`price_column`): vs trailing 28-day mean, vs trailing 364-day max, 1- and 7-day change
+  - promo / closures (known-future flags, backward-looking): promo streak, days since promo, days since
+    closed, closure streak ending yesterday
+  - group aggregates (`spec.agg_groups`, chosen at fit): 28-day rolling mean of the group's daily mean
+    target at the lag origin + the series' ratio to it. Groups: store and store×hierarchy (M5
+    `dept_id`, `cat_id` via `id_columns`) when stores hold many items; store type / assortment across
+    stores when each store is one series (Rossmann). Forecasts load the model's training scope so
+    aggregates match training, then filter output to the requested store.
+  - store metadata (Rossmann `store.csv`), known-future covariates, categorical ids
+  - `seq_0..seq_{L-1}`: target window ending at the lag origin, only when a sequence model needs it
+- Training options per run (`training_config`): `history_days`, `use_store_features`.
+- Validation = last `validation_days` (default = horizon). Metrics (`ml/metrics.py`): MAE, RMSE, WAPE,
+  RMSSE (M5 definition: per-series RMSE scaled by the training-period one-step naive error, averaged
+  over series), R², MAPE, sMAPE, RMSPE (Rossmann), bias. Tune on any of wape/rmse/mae/rmspe/rmsse.
+- Intervals: quantile models give P10/P50/P90 directly (pinball loss + coverage reported); otherwise an
+  empirical P10–P90 band from relative validation residuals (coverage reported, in-sample). Aggregated
+  forecast bands are sums of per-series bands — conservative for the total.
+- Families (`ml/families.py`; add one: subclass `ForecastModel`, register in `FAMILIES`, `ModelFamily`
+  enum, frontend `types.ts`; tabular models read `spec.feature_columns`, sequence models
+  `spec.model_columns` and declare `required_seq_len`):
+  - `seasonal_naive` — baseline.
+  - `lightgbm` — `objective=auto` → Tweedie (`tweedie_variance_power`, tunable 1.05–1.9) when the target
+    is zero-heavy (>30 % zeros, non-negative), else L2; `quantiles=auto` trains P10/P50/P90 boosters
+    for such targets (sorted to remove crossing).
+  - `torch_mlp` — embeddings + MLP; `loss=auto` → Poisson (log-rate output) for zero-heavy targets,
+    else standardized log1p MSE; batch capped for ≥50 steps/epoch.
+  - `torch_gru` — GRU over the scale-normalized `seq_len`-day window, fused with the tabular path.
+  - `ensemble` — trains `members` (default LightGBM + GRU) and blends them. Weights (grid search for
+    2 members, NNLS otherwise) are fitted on the **first half** of the validation window; members,
+    equal-weight and fitted blends are all scored on the **second half** (`metrics.ensemble`). Torch
+    members pickle via `__getstate__` (state-dict blob), so ensembles are single `.pkl` artifacts.
 - Event forecasts override known-future covariates on date ranges and diff against a baseline run.
   Future covariates resolve as: auxiliary joins (real future values) → `covariate_defaults` → last
   observed same-weekday value. Id categoricals carry forward before joins run.
-- `torch_mlp` trains on a standardized log1p target and caps batch size so small datasets still get ≥50
-  steps/epoch.
 
 ## GPU training workflow
 
@@ -223,7 +251,7 @@ python -m scripts.run_pipeline rossmann --stores 1 2 3 --families lightgbm --no-
 2. `docker compose --profile gpu up --build` starts `celery-worker-gpu` (Dockerfile.gpu, CUDA 12.4 torch wheel,
    `TRAINING_DEVICE=cuda`, concurrency 1, listens on `training`). To keep training off the CPU worker,
    set its `-Q` to `ingestion,forecasting`.
-3. Submit `model_family=torch_mlp`; the run's `device` column records `cuda`/`cpu`, `epoch_logs` carry
+3. Submit `model_family=torch_mlp`, `torch_gru` or `ensemble`; the run's `device` column records `cuda`/`cpu`, `epoch_logs` carry
    per-epoch loss/WAPE, checkpoints save as `model.pt` (state_dict + preprocessing stats, loaded with `map_location`).
 4. Native (no Docker): `pip install torch --index-url https://download.pytorch.org/whl/cu124`, then run a
    worker with `-Q training -c 1`. Verify with `python -c "import torch; print(torch.cuda.is_available())"`.

@@ -111,13 +111,14 @@ export default function ModelLabPage() {
               <CardContent>
                 {leaderboard.data?.entries.length ? (
                   <Table>
-                    <THead><tr><TH>#</TH><TH>Model</TH><TH>WAPE</TH><TH>RMSPE</TH><TH>ms/1k</TH></tr></THead>
+                    <THead><tr><TH>#</TH><TH>Model</TH><TH>WAPE</TH><TH>RMSSE</TH><TH>RMSPE</TH><TH>ms/1k</TH></tr></THead>
                     <tbody>
                       {leaderboard.data.entries.map((e) => (
                         <TR key={e.model_run_id}>
                           <TD>{e.rank}</TD>
                           <TD><Link className="font-medium hover:underline" href={`/model-lab/${e.model_run_id}`}>{e.name ?? e.model_family}</Link></TD>
                           <TD>{formatPct(e.metric_value, 2)}</TD>
+                          <TD>{formatNumber(e.metrics.rmsse, 3)}</TD>
                           <TD>{formatPct(e.metrics.rmspe, 2)}</TD>
                           <TD>{formatNumber(e.inference_ms, 1)}</TD>
                         </TR>

@@ -27,7 +27,7 @@ from app.services.tenancy import get_owned, paginate, scoped
 from app.workers import dispatch
 
 router = APIRouter(tags=["model-lab"])
-LOWER_IS_BETTER = {"wape", "rmse", "mae", "rmspe", "smape", "mape"}
+LOWER_IS_BETTER = {"wape", "rmse", "mae", "rmspe", "smape", "mape", "rmsse"}
 
 
 @router.get("/model-families", response_model=list[ModelFamilyInfo])
@@ -148,7 +148,7 @@ async def leaderboard(
     principal: CurrentPrincipal,
     db: DbSession,
     dataset_id: uuid.UUID,
-    metric: str = Query("wape", pattern="^(wape|rmse|mae|rmspe|smape|mape)$"),
+    metric: str = Query("wape", pattern="^(wape|rmse|mae|rmspe|smape|mape|rmsse|r2)$"),
     limit: int = Query(20, ge=1, le=100),
 ) -> Leaderboard:
     await get_owned(db, Dataset, dataset_id, principal.organization_id)
@@ -165,7 +165,7 @@ async def leaderboard(
             model_family=r.model_family,
             run_type=r.run_type,
             metric_value=float(r.metrics[metric]),
-            metrics={k: v for k, v in r.metrics.items() if k in LOWER_IS_BETTER | {"bias_pct", "n"}},
+            metrics={k: v for k, v in r.metrics.items() if k in LOWER_IS_BETTER | {"bias_pct", "n", "r2"}},
             inference_ms=r.inference_ms,
             finished_at=r.finished_at,
         )

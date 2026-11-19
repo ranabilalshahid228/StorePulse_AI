@@ -30,8 +30,7 @@ import pandas as pd  # noqa: E402
 
 from app.ml.families import FAMILIES, ForecastModel  # noqa: E402
 from app.ml.forecasting import run_forecast  # noqa: E402
-from app.ml.metrics import empirical_interval, regression_metrics  # noqa: E402
-from app.ml.training import _fit_once, prepare_data  # noqa: E402
+from app.ml.training import _fit_once, evaluate_model, prepare_data  # noqa: E402
 from app.models.enums import ModelFamily  # noqa: E402
 from app.schemas.dataset import JoinSpec, SchemaMapping  # noqa: E402
 from app.services.diagnostics import compute_health_report  # noqa: E402
@@ -152,6 +151,8 @@ def main() -> int:
     ap.add_argument("--no-store-features", action="store_true")
     ap.add_argument("--lgb-rounds", type=int, default=1000)
     ap.add_argument("--torch-epochs", type=int, default=8)
+    ap.add_argument("--lgb-objective", default="auto", choices=["auto", "regression", "tweedie", "poisson"])
+    ap.add_argument("--quantiles", default="auto", choices=["auto", "true", "false"])
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
@@ -198,6 +199,7 @@ def main() -> int:
             None,
             history_days=args.history_days,
             store_static=None if args.no_store_features else cfg["store_static"],
+            seq_len=max(FAMILIES[ModelFamily(f)].required_seq_len({}) for f in args.families),
         )
         summary["features"] = {
             "train_rows": len(data.X_tr),
@@ -220,16 +222,24 @@ def main() -> int:
             if not FAMILIES[family].is_available():
                 print(f"    {fam}: not installed, skipped")
                 continue
-            params: dict[str, Any] = {}
-            if family == ModelFamily.LIGHTGBM:
-                params = {"num_boost_round": args.lgb_rounds}
-            elif family == ModelFamily.TORCH_MLP:
-                params = {"max_epochs": args.torch_epochs}
+            quantiles = {"auto": "auto", "true": True, "false": False}[args.quantiles]
+            lgb_params = {
+                "num_boost_round": args.lgb_rounds,
+                "objective": args.lgb_objective,
+                "quantiles": quantiles,
+            }
+            nn_params = {"max_epochs": args.torch_epochs}
+            params: dict[str, Any] = {
+                ModelFamily.LIGHTGBM: lgb_params,
+                ModelFamily.TORCH_MLP: nn_params,
+                ModelFamily.TORCH_GRU: nn_params,
+                ModelFamily.ENSEMBLE: {"member_params": {"lightgbm": lgb_params, "torch_gru": nn_params}},
+            }.get(family, {})
             t0 = time.perf_counter()
             model, logs, preds = _fit_once(family, data, params, "cpu", progress)
             fit_s = time.perf_counter() - t0
-            m = regression_metrics(data.y_val, preds)
-            interval = empirical_interval(data.y_val, preds)
+            m = evaluate_model(model, data, preds)
+            interval = m.get("interval")
             path = Path(tmp) / f"model.{model.artifact_ext}"
             model.save(path)
             loaded = ForecastModel.load(path)
@@ -239,7 +249,7 @@ def main() -> int:
             t1 = time.perf_counter()
             out, fsum = run_forecast(
                 model=loaded,
-                metrics={"interval": interval} if interval else {},
+                metrics=m,
                 parquet_path=canon,
                 store_code=None,
                 horizon=horizon,
@@ -253,12 +263,12 @@ def main() -> int:
                 progress=progress,
             )
             entry = {
-                "wape": m["wape"],
-                "rmse": m["rmse"],
-                "mae": m["mae"],
-                "rmspe": m["rmspe"],
-                "bias_pct": m["bias_pct"],
+                **{k: m[k] for k in ("wape", "rmse", "mae", "rmsse", "r2", "rmspe", "bias_pct")},
+                "params": {
+                    k: v for k, v in model.params.items() if k in ("resolved_objective", "fitted_weights")
+                },
                 "interval": interval,
+                "ensemble": m.get("ensemble"),
                 "fit_seconds": round(fit_s, 1),
                 "forecast_seconds": round(time.perf_counter() - t1, 1),
                 "forecast_rows": len(out),
@@ -268,15 +278,23 @@ def main() -> int:
                     c: int(out[c].isna().sum()) for c in ("price",) if c in out and mapping.price_column
                 },
             }
-            if family == ModelFamily.LIGHTGBM:
+            if family in (ModelFamily.LIGHTGBM, ModelFamily.ENSEMBLE):
                 fi = model.feature_importance() or {}
                 entry["top_features"] = [k for k, _ in sorted(fi.items(), key=lambda kv: -kv[1])[:10]]
             summary["models"][fam] = entry
-            rmspe = f"{m['rmspe']:.4f}" if m["rmspe"] is not None else "n/a"
+
+            def fmt(v: Any) -> str:
+                return "n/a" if v is None else f"{v:.4f}"
+
+            cov = fmt(interval.get("coverage")) if interval else "n/a"
             print(
-                f"    {fam:<15} WAPE {m['wape']:.4f}  RMSPE {rmspe}  fit {fit_s:.1f}s  "
-                f"forecast {entry['forecast_seconds']}s ({len(out):,} rows)"
+                f"    {fam:<15} WAPE {fmt(m['wape'])}  RMSSE {fmt(m['rmsse'])}  RMSE {fmt(m['rmse'])}  "
+                f"R2 {fmt(m['r2'])}  RMSPE {fmt(m['rmspe'])}  P10-P90 cov {cov}  fit {fit_s:.0f}s"
             )
+            if m.get("ensemble"):
+                for name, mm in m["ensemble"]["models"].items():
+                    print(f"      holdout {name:<20} WAPE {fmt(mm['wape'])}  RMSE {fmt(mm['rmse'])}")
+                print(f"      weights {m['ensemble']['weights']}")
 
     if args.out:
         args.out.write_text(json.dumps(summary, indent=2, default=str))

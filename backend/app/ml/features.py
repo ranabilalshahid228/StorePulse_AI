@@ -62,6 +62,14 @@ class FeatureSpec:
     category_levels: dict[str, list[str]] = field(default_factory=dict)
     feature_columns: list[str] = field(default_factory=list)
     price_column: str | None = None
+    promo_column: str | None = None
+    open_column: str | None = None
+    # Id-type categoricals forming a product hierarchy (e.g. M5 dept_id, cat_id) for group aggregates.
+    hierarchy: list[str] = field(default_factory=list)
+    # Grouping keys for cross-series rolling aggregates, decided at fit time.
+    agg_groups: list[list[str]] = field(default_factory=list)
+    # >0 adds seq_0..seq_{n-1} (target window ending at the lag origin) for sequence models.
+    seq_len: int = 0
     # store_code -> Store attributes (store_type, assortment, competition_*, promo2_*), frozen at train time
     store_static: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -75,12 +83,28 @@ class FeatureSpec:
             known_future=list(mapping.get("known_future_columns") or []),
             categorical=list(mapping.get("categorical_columns") or []),
             price_column=mapping.get("price_column"),
+            promo_column=mapping.get("promo_column"),
+            open_column=mapping.get("open_column"),
+            hierarchy=[
+                c
+                for c in (mapping.get("id_columns") or [])
+                if c in (mapping.get("categorical_columns") or [])
+            ],
             store_static=store_static or {},
         )
 
     @property
     def lag_columns(self) -> list[str]:
         return [f"lag_{self.lag_offset + k}" for k in LAG_STEPS]
+
+    @property
+    def sequence_columns(self) -> list[str]:
+        return [f"seq_{k}" for k in range(self.seq_len)]
+
+    @property
+    def model_columns(self) -> list[str]:
+        """Everything any model may consume (tabular features + optional sequence window)."""
+        return [*self.feature_columns, *self.sequence_columns]
 
     @property
     def static_categorical(self) -> list[str]:
@@ -242,6 +266,9 @@ def build_features(df: pd.DataFrame, spec: FeatureSpec, *, fit_categories: bool)
     # Same-weekday mean of the last 4 aligned weeks.
     out["dow_mean_4w"] = out[[f"lag_{o}", f"lag_{o + 7}", f"lag_{o + 14}", f"lag_{o + 21}"]].mean(axis=1)
     dyn += ["roll_std_28", "roll_zero_share_28", "dow_mean_4w"]
+    dyn += _intermittency(out, shifted, gid)
+    for k in range(spec.seq_len):
+        out[f"seq_{k}"] = shifted_by.shift(o + k)
 
     for c in spec.known_future:
         out[c] = pd.to_numeric(out[c], errors="coerce").astype("float32")
@@ -260,9 +287,22 @@ def build_features(df: pd.DataFrame, spec: FeatureSpec, *, fit_categories: bool)
         )
         out["price_rel_mean"] = (p / trailing).astype("float32")
         out["price_change_7"] = (p / by.shift(7) - 1).astype("float32")
-        price_cols = ["price_rel_mean", "price_change_7"]
+        out["price_change_1"] = (p / by.shift(1) - 1).astype("float32")
+        trailing_max = (
+            by.shift(1)
+            .groupby(gid, sort=False)
+            .rolling(364, min_periods=1)
+            .max()
+            .reset_index(level=0, drop=True)
+        )
+        out["price_rel_max_364"] = (p / trailing_max).astype("float32")
+        price_cols = ["price_rel_mean", "price_change_7", "price_change_1", "price_rel_max_364"]
 
+    event_cols = _covariate_runs(out, spec, gid)
     _store_static(out, spec)
+    if fit_categories:
+        spec.agg_groups = _choose_agg_groups(out, spec)
+    agg_cols = _group_aggregates(out, spec)
 
     for c in spec.categorical_features:
         values = out[c].astype("string").fillna("")
@@ -276,12 +316,104 @@ def build_features(df: pd.DataFrame, spec: FeatureSpec, *, fit_categories: bool)
         *dyn,
         *spec.known_future,
         *price_cols,
+        *event_cols,
+        *agg_cols,
         *spec.static_numeric,
         *spec.categorical_features,
     ]
     if fit_categories:
         spec.feature_columns = feature_cols
     return out
+
+
+def _rolling(s: pd.Series, gid: np.ndarray, w: int, how: str, min_periods: int = 1) -> pd.Series:
+    r = s.groupby(gid, sort=False).rolling(w, min_periods=min_periods)
+    return getattr(r, how)().reset_index(level=0, drop=True)
+
+
+def _intermittency(out: pd.DataFrame, shifted: pd.Series, gid: np.ndarray) -> list[str]:
+    """Intermittent-demand features at the lag origin (t - lag_offset): non-zero rates, Croston-style
+    mean demand size, and days since the last sale. All read only `shifted`, so they are leak-free."""
+    nonzero = (shifted > 0).astype("float32").where(shifted.notna())
+    for w in (28, 91):
+        out[f"nz_rate_{w}"] = _rolling(nonzero, gid, w, "mean", 7).astype("float32")
+    sums = _rolling(shifted, gid, 91, "sum", 7)
+    counts = _rolling(nonzero, gid, 91, "sum", 7)
+    out["nz_size_91"] = (sums / counts.where(counts > 0)).astype("float32")
+    pos = np.arange(len(out), dtype="float64")
+    last_sale = pd.Series(np.where(shifted.to_numpy() > 0, pos, np.nan), index=out.index)
+    last_sale = last_sale.groupby(gid, sort=False).ffill()
+    observed = shifted.notna().groupby(gid, sort=False).cummax()
+    days = pd.Series(pos, index=out.index) - last_sale
+    # No sale yet in an observed window -> cap; before any observation -> NaN.
+    out["days_since_sale"] = days.fillna(365).clip(upper=365).where(observed).astype("float32")
+    return ["nz_rate_28", "nz_rate_91", "nz_size_91", "days_since_sale"]
+
+
+def _run_length(flag: pd.Series, gid: np.ndarray) -> pd.Series:
+    """Consecutive days (inclusive) the 0/1 flag has been on, per series."""
+    f = flag.fillna(0).astype("int32")
+    breaks = (f == 0).astype("int32").groupby(gid, sort=False).cumsum()
+    return f.groupby([gid, breaks.to_numpy()], sort=False).cumsum().astype("float32")
+
+
+def _days_since(flag: pd.Series, gid: np.ndarray, cap: int = 60) -> pd.Series:
+    pos = np.arange(len(flag), dtype="float64")
+    last = pd.Series(np.where(flag.fillna(0).to_numpy() > 0, pos, np.nan), index=flag.index)
+    last = last.groupby(gid, sort=False).ffill()
+    return (pd.Series(pos, index=flag.index) - last).fillna(cap).clip(upper=cap).astype("float32")
+
+
+def _covariate_runs(out: pd.DataFrame, spec: FeatureSpec, gid: np.ndarray) -> list[str]:
+    """Promo streaks and closure recency from *known-future* flags (backward-looking only, so the
+    values are identical whether a row is history or a forecast date)."""
+    cols: list[str] = []
+    if spec.promo_column and spec.promo_column in out:
+        promo = out[spec.promo_column]
+        out["promo_streak"] = _run_length(promo, gid)
+        out["days_since_promo"] = _days_since(promo, gid)
+        cols += ["promo_streak", "days_since_promo"]
+    if spec.open_column and spec.open_column in out:
+        closed = (out[spec.open_column].fillna(1) == 0).astype("float32")
+        out["days_since_closed"] = _days_since(closed, gid, cap=30)
+        out["closed_streak_lag1"] = _run_length(closed, gid).groupby(gid, sort=False).shift(1).fillna(0)
+        cols += ["days_since_closed", "closed_streak_lag1"]
+    return cols
+
+
+def _choose_agg_groups(out: pd.DataFrame, spec: FeatureSpec) -> list[list[str]]:
+    """Store-level and hierarchy groups when stores hold many items (M5); store-type/assortment
+    groups across stores when each store is one series (Rossmann)."""
+    items_per_store = out.groupby("store_code")["item_id"].nunique()
+    groups: list[list[str]] = []
+    if (items_per_store > 1).any():
+        groups.append(["store_code"])
+        groups += [["store_code", h] for h in spec.hierarchy if out[h].nunique() > 1]
+    for c in spec.static_categorical:
+        if out[c].nunique() > 1:
+            groups.append([c])
+    return groups
+
+
+def _group_aggregates(out: pd.DataFrame, spec: FeatureSpec) -> list[str]:
+    """28-day rolling mean of the group's average daily target at the lag origin, plus the series'
+    ratio to it. Built on a full date axis (pivot), so the shift is in calendar days, not rows."""
+    cols: list[str] = []
+    o = spec.lag_offset
+    for keys in spec.agg_groups:
+        name = "agg_" + "_".join(k.replace("st_", "") for k in keys)
+        key = out[keys[0]].astype(str)
+        for k in keys[1:]:
+            key = key + "|" + out[k].astype(str)
+        daily = out.assign(_g=key.to_numpy()).groupby(["ds", "_g"])["y"].mean().unstack("_g")
+        daily = daily.reindex(pd.date_range(daily.index.min(), daily.index.max(), freq="D"))
+        rolled = daily.shift(o).rolling(28, min_periods=7).mean()
+        stacked = rolled.stack(future_stack=True)
+        idx = pd.MultiIndex.from_arrays([out["ds"].to_numpy(), key.to_numpy()])
+        out[name] = stacked.reindex(idx).to_numpy(dtype="float32")
+        out[f"{name}_ratio"] = (out["roll_mean_28"] / out[name].where(out[name] > 0)).astype("float32")
+        cols += [name, f"{name}_ratio"]
+    return cols
 
 
 def training_mask(features: pd.DataFrame, spec: FeatureSpec) -> pd.Series:

@@ -297,12 +297,14 @@ def run_forecast(forecast_id: str) -> dict:
             ds = s.get(Dataset, fr.dataset_id)
             store = s.get(Store, fr.store_id) if fr.store_id else None
             assert run is not None and ds is not None and run.artifact_path and ds.parquet_path
+            scope = s.get(Store, run.store_id) if run.store_id else None
             ctx = {
                 "org_id": fr.organization_id,
                 "artifact": run.artifact_path,
                 "metrics": dict(run.metrics),
                 "parquet": ds.parquet_path,
                 "store_code": store.code if store else None,
+                "scope_store_code": scope.code if scope else None,
                 "horizon": fr.horizon_days,
                 "scenario": dict(fr.scenario),
                 "mapping": dict(ds.schema_mapping or {}),
@@ -332,6 +334,7 @@ def run_forecast(forecast_id: str) -> dict:
             promo_column=ctx["mapping"].get("promo_column"),
             open_column=ctx["mapping"].get("open_column"),
             price_column=ctx["mapping"].get("price_column"),
+            scope_store_code=ctx["scope_store_code"],
             enrich=enrich,
             progress=progress,
         )

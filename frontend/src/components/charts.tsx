@@ -70,7 +70,7 @@ export function ForecastBandChart({ data, height = 300 }: { data: object[]; heig
         <YAxis tick={axis} tickLine={false} axisLine={false} tickFormatter={formatCompact} width={48} />
         <Tooltip {...tooltipStyle} />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Area dataKey="band" name="90% interval" stroke="none" fill="var(--chart-1)" fillOpacity={0.15} />
+        <Area dataKey="band" name="P10–P90 band" stroke="none" fill="var(--chart-1)" fillOpacity={0.15} />
         <Line dataKey="yhat" name="Forecast" stroke="var(--chart-1)" strokeWidth={2} dot={false} />
         <Line dataKey="baseline_yhat" name="Baseline" stroke="var(--chart-5)" strokeDasharray="4 3" dot={false} connectNulls />
       </ComposedChart>

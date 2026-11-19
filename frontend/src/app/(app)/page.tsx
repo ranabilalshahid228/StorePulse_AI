@@ -67,7 +67,7 @@ export default function CommandCenter() {
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle>Latest forecast</CardTitle>
-            <CardDescription>Aggregated across all series, with the empirical 90% interval from validation.</CardDescription>
+            <CardDescription>Aggregated across all series. Band = summed per-series P10–P90 (conservative for the total).</CardDescription>
           </CardHeader>
           <CardContent>
             {latest ? (

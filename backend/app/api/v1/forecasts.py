@@ -39,6 +39,10 @@ async def _submit(
         raise DomainValidationError(
             f"horizon_days ({body.horizon_days}) exceeds the model's trained horizon ({run.horizon_days})"
         )
+    if run.store_id and body.store_id and body.store_id != run.store_id:
+        raise DomainValidationError(
+            "This model was trained on a single store and can only forecast that store"
+        )
     store_id = body.store_id or run.store_id
     if store_id:
         await get_owned(db, Store, store_id, principal.organization_id)
@@ -144,11 +148,16 @@ async def forecast_series(
     store_code: str | None = None,
     aggregate: bool = True,
 ) -> ForecastSeries:
-    """Daily forecast points. With `aggregate=true` (default) series are summed per day."""
+    """Daily forecast points. With `aggregate=true` (default) series are summed per day.
+
+    Aggregated bounds are sums of per-series bounds: quantiles are not additive, so the summed band
+    is wider than the true band of the total (conservative)."""
     fr = await get_owned(db, ForecastRun, forecast_id, principal.organization_id)
     df = await run_in_threadpool(read_forecast_frame, fr, store_code)
+    if "yhat_p50" not in df:  # forecasts made before quantile support
+        df["yhat_p50"] = float("nan")
     if aggregate:
-        num = ["yhat", "yhat_lower", "yhat_upper", "baseline_yhat"]
+        num = ["yhat", "yhat_lower", "yhat_upper", "yhat_p50", "baseline_yhat"]
         df = df.groupby("ds", as_index=False)[num].sum(min_count=1)
         df["store_code"] = store_code or "__aggregate__"
         df["item_id"] = None
@@ -156,7 +165,7 @@ async def forecast_series(
     points = [
         ForecastPoint(**r)
         for r in df[
-            ["ds", "store_code", "item_id", "yhat", "yhat_lower", "yhat_upper", "baseline_yhat"]
+            ["ds", "store_code", "item_id", "yhat", "yhat_lower", "yhat_upper", "yhat_p50", "baseline_yhat"]
         ].to_dict(orient="records")
     ]
     return ForecastSeries(forecast_run_id=fr.id, points=points)

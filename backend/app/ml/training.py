@@ -16,8 +16,15 @@ from app.core.config import get_settings
 from app.ml import plots
 from app.ml.data import load_history
 from app.ml.families import FAMILIES, ForecastModel, resolve_device, suggest_params
-from app.ml.features import LAG_STEPS, FeatureSpec, build_features, complete_calendar, training_mask
-from app.ml.metrics import empirical_interval, regression_metrics
+from app.ml.features import (
+    LAG_STEPS,
+    SERIES_KEYS,
+    FeatureSpec,
+    build_features,
+    complete_calendar,
+    training_mask,
+)
+from app.ml.metrics import empirical_interval, interval_metrics, regression_metrics, series_scales
 from app.models.enums import ModelFamily
 from app.services.storage import ArtifactKeys, get_storage
 from app.workers.progress import ProgressReporter
@@ -34,10 +41,19 @@ class PreparedData:
         y_val: np.ndarray,
         val_frame: pd.DataFrame,
         spec: FeatureSpec,
+        val_scale: np.ndarray | None = None,
     ) -> None:
         self.X_tr, self.y_tr, self.X_val, self.y_val = X_tr, y_tr, X_val, y_val
         self.val_frame = val_frame
         self.spec = spec
+        # RMSSE inputs: series id + training-period naive-error scale for every validation row.
+        self.val_series = (
+            val_frame["store_code"].astype(str) + "|" + val_frame["item_id"].astype(str)
+        ).to_numpy()
+        self.val_scale = val_scale
+
+    def metrics(self, preds: np.ndarray) -> dict[str, Any]:
+        return regression_metrics(self.y_val, preds, series=self.val_series, scale=self.val_scale)
 
 
 def prepare_data(
@@ -49,18 +65,21 @@ def prepare_data(
     *,
     history_days: int | None = None,
     store_static: dict[str, dict[str, Any]] | None = None,
+    seq_len: int = 0,
 ) -> PreparedData:
     """Load, complete, featurize and split. `history_days` keeps only the most recent N days of
-    targets for training (plus the lag window needed to build their features)."""
+    targets for training (plus the lag window needed to build their features). `seq_len` > 0 adds
+    the target window consumed by sequence models."""
     raw = load_history(parquet_path, store_code)
     if history_days:
         spec_probe = FeatureSpec.from_mapping(mapping, horizon)
-        keep = history_days + spec_probe.lag_offset + max(LAG_STEPS) + 28
+        keep = history_days + spec_probe.lag_offset + max(max(LAG_STEPS), seq_len, 91) + 28
         raw = raw[raw["ds"] > raw["ds"].max() - pd.Timedelta(days=keep)]
     present = set(raw["store_code"].astype(str).unique())
     spec = FeatureSpec.from_mapping(
         mapping, horizon, {k: v for k, v in (store_static or {}).items() if k in present}
     )
+    spec.seq_len = seq_len
     full = complete_calendar(raw)
     feats = build_features(full, spec, fit_categories=True)
     cutoff = feats["ds"].max() - pd.Timedelta(days=validation_days)
@@ -74,7 +93,11 @@ def prepare_data(
             f"Not enough history: {len(tr)} train rows / {len(val)} validation rows "
             f"(need >= 100 / 7). Reduce horizon or validation_days."
         )
-    cols = spec.feature_columns
+    cols = spec.model_columns
+    # RMSSE scale from each series' full training-period history (not just the usable rows).
+    scales = series_scales(feats[feats["ds"] <= cutoff], SERIES_KEYS)
+    val_idx = pd.MultiIndex.from_frame(val[SERIES_KEYS].astype(str))
+    val_scale = scales.reindex(val_idx).to_numpy(dtype="float64")
     return PreparedData(
         tr[cols],
         tr["y"].to_numpy("float64"),
@@ -82,6 +105,7 @@ def prepare_data(
         val["y"].to_numpy("float64"),
         val[["ds", "store_code", "item_id", "y"]].copy(),
         spec,
+        val_scale=val_scale,
     )
 
 
@@ -103,6 +127,33 @@ def _fit_once(
     model.fit(data.X_tr, data.y_tr, data.X_val, data.y_val, on_epoch)
     preds = np.clip(model.predict(data.X_val), 0, None)
     return model, logs, preds
+
+
+def evaluate_model(model: ForecastModel, data: PreparedData, preds: np.ndarray) -> dict[str, Any]:
+    """Validation metrics stored on the run: point metrics (incl. RMSSE, R2), the interval used at
+    inference with its coverage/pinball loss, and the ensemble comparison when present."""
+    metrics: dict[str, Any] = data.metrics(preds)
+    quantiles = model.predict_quantiles(data.X_val)
+    if quantiles:
+        lo, hi = quantiles[min(quantiles)], quantiles[max(quantiles)]
+        metrics["interval"] = {
+            "method": "quantile_model",
+            "levels": sorted(quantiles),
+            **interval_metrics(data.y_val, lo, hi, quantiles),
+        }
+    else:
+        interval = empirical_interval(data.y_val, preds)
+        if interval:
+            lo = np.clip(preds * (1 + interval["lower"]), 0, None)
+            hi = preds * (1 + interval["upper"])
+            # Coverage is in-sample here: the band was calibrated on this same window.
+            metrics["interval"] = {**interval, **interval_metrics(data.y_val, lo, hi)}
+    comparison = getattr(model, "comparison", None)
+    if comparison:
+        metrics["ensemble"] = comparison
+    metrics["validation_start"] = data.val_frame["ds"].min().date().isoformat()
+    metrics["validation_end"] = data.val_frame["ds"].max().date().isoformat()
+    return metrics
 
 
 def _benchmark_inference(model: ForecastModel, X: pd.DataFrame) -> float:
@@ -128,12 +179,7 @@ def _finalize(
     progress: ProgressReporter,
 ) -> dict[str, Any]:
     storage = get_storage()
-    metrics = regression_metrics(data.y_val, preds)
-    interval = empirical_interval(data.y_val, preds)
-    if interval:
-        metrics["interval"] = interval
-    metrics["validation_start"] = data.val_frame["ds"].min().date().isoformat()
-    metrics["validation_end"] = data.val_frame["ds"].max().date().isoformat()
+    metrics = evaluate_model(model, data, preds)
 
     progress.update(0.3, "benchmarking", force=True)
     inference_ms = _benchmark_inference(model, data.X_val)
@@ -199,6 +245,7 @@ def train(
         store_code,
         history_days=history_days,
         store_static=store_static,
+        seq_len=FAMILIES[family].required_seq_len(params),
     )
     device = resolve_device(get_settings().training_device, FAMILIES[family])
     progress.update(0.1, "training", message=f"device={device}", force=True)
@@ -239,6 +286,9 @@ def tune(
     import optuna
 
     progress.update(0.02, "loading_data", force=True)
+    # Size the window for the largest seq_len the search space can propose.
+    seq_choices = search_space.get("seq_len", {}).get("choices", [])
+    seq_len = max([FAMILIES[family].required_seq_len(base_params), *map(int, seq_choices)])
     data = prepare_data(
         parquet_path,
         mapping,
@@ -247,6 +297,7 @@ def tune(
         store_code,
         history_days=history_days,
         store_static=store_static,
+        seq_len=seq_len,
     )
     device = resolve_device(get_settings().training_device, FAMILIES[family])
     trials: list[dict[str, Any]] = []
@@ -255,7 +306,7 @@ def tune(
     def objective(trial: optuna.Trial) -> float:
         params = {**base_params, **suggest_params(trial, search_space)}
         _, _, preds = _fit_once(family, data, params, device, None)
-        m = regression_metrics(data.y_val, preds)
+        m = data.metrics(preds)
         value = m.get(metric)
         if value is None:
             raise optuna.TrialPruned(f"metric {metric} undefined")

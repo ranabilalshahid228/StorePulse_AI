@@ -32,7 +32,7 @@ class TrainRequest(BaseModel):
 class TuneRequest(TrainRequest):
     n_trials: int | None = Field(default=None, ge=1, le=500)
     timeout_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
-    metric: Literal["wape", "rmse", "mae", "rmspe"] = "wape"
+    metric: Literal["wape", "rmse", "mae", "rmspe", "rmsse"] = "wape"
     search_space: dict[str, Any] | None = Field(
         default=None, description="Override per-family default search space"
     )
@@ -165,6 +165,7 @@ class ForecastPoint(BaseModel):
     yhat: float
     yhat_lower: float | None = None
     yhat_upper: float | None = None
+    yhat_p50: float | None = None
     baseline_yhat: float | None = None
 
 

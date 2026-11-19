@@ -3,7 +3,7 @@
 export type UUID = string;
 export type JobStatus = "pending" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type DatasetStatus = "uploaded" | "mapping_required" | "queued" | "processing" | "ready" | "failed";
-export type ModelFamily = "seasonal_naive" | "lightgbm" | "torch_mlp";
+export type ModelFamily = "seasonal_naive" | "lightgbm" | "torch_mlp" | "torch_gru" | "ensemble";
 export type TargetType = "sales" | "units" | "customers";
 
 export interface Page<T> {
@@ -148,7 +148,16 @@ export interface ModelRun {
   hyperparameters: Record<string, unknown>;
   n_trials: number | null;
   training_config: { history_days?: number | null; use_store_features?: boolean };
-  metrics: Record<string, unknown> & { wape?: number; rmse?: number; mae?: number; rmspe?: number };
+  metrics: Record<string, unknown> & {
+    wape?: number;
+    rmse?: number;
+    mae?: number;
+    rmspe?: number;
+    rmsse?: number | null;
+    r2?: number | null;
+    interval?: IntervalMetrics;
+    ensemble?: EnsembleComparison;
+  };
   inference_ms: number | null;
   device: string | null;
   status: JobStatus;
@@ -159,6 +168,25 @@ export interface ModelRun {
   plot_paths: string[];
   created_at: string;
   finished_at: string | null;
+}
+
+export interface IntervalMetrics {
+  method: "quantile_model" | "empirical_relative_residual";
+  coverage?: number;
+  mean_width?: number;
+  levels?: number[];
+  pinball_p10?: number;
+  pinball_p50?: number;
+  pinball_p90?: number;
+}
+
+export interface EnsembleComparison {
+  weights: Record<string, number>;
+  weight_metric: string;
+  weights_fitted_on: string;
+  compared_on: string;
+  holdout_rows: number;
+  models: Record<string, { wape: number | null; rmse: number | null; mae: number | null; bias_pct: number | null; r2: number | null }>;
 }
 
 export interface ModelRunDetail extends ModelRun {
@@ -213,6 +241,7 @@ export interface ForecastPoint {
   yhat: number;
   yhat_lower: number | null;
   yhat_upper: number | null;
+  yhat_p50?: number | null;
   baseline_yhat: number | null;
 }
 

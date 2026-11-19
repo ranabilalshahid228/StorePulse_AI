@@ -40,6 +40,8 @@ class ModelFamily(StrEnum):
     SEASONAL_NAIVE = "seasonal_naive"
     LIGHTGBM = "lightgbm"
     TORCH_MLP = "torch_mlp"
+    TORCH_GRU = "torch_gru"
+    ENSEMBLE = "ensemble"
 
 
 class RunType(StrEnum):

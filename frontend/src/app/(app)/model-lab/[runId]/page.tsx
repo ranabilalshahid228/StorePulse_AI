@@ -28,8 +28,16 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
   if (run.error) return <ErrorNotice error={run.error} />;
   if (!r) return <Skeleton className="h-64" />;
 
-  const curveKeys = r.epoch_logs.length ? Object.keys(r.epoch_logs[0]!).filter((k) => k !== "epoch" && k !== "seconds").slice(0, 3) : [];
+  // Logs may interleave several models (quantile boosters, ensemble members): plot the first one.
+  const tag = (l: Record<string, unknown>) => String(l.member ?? l.model ?? "");
+  const firstTag = r.epoch_logs.length ? tag(r.epoch_logs[0]!) : "";
+  const curve = r.epoch_logs.filter((l) => tag(l) === firstTag);
+  const curveKeys = curve.length
+    ? Object.keys(curve[0]!).filter((k) => !["epoch", "seconds"].includes(k) && typeof curve[0]![k] === "number").slice(0, 3)
+    : [];
   const m = r.metrics as Record<string, number | undefined>;
+  const interval = r.metrics.interval;
+  const ensemble = r.metrics.ensemble;
 
   return (
     <>
@@ -39,13 +47,72 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
         actions={<JobProgress status={r.status} pct={r.progress_pct} stage={r.stage} />}
       />
       {r.error ? <div className="mb-6"><ErrorNotice error={new Error(r.error)} /></div> : null}
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
         <Kpi label="WAPE" value={formatPct(m.wape, 2)} />
-        <Kpi label="RMSPE" value={formatPct(m.rmspe, 2)} />
+        <Kpi label="RMSSE" value={formatNumber(m.rmsse, 3)} sub="vs. naive, per series" />
+        <Kpi label="RMSE" value={formatNumber(m.rmse, 1)} />
         <Kpi label="MAE" value={formatNumber(m.mae, 1)} />
+        <Kpi label="R²" value={formatNumber(m.r2, 3)} />
         <Kpi label="Bias" value={formatPct(m.bias_pct, 2)} />
         <Kpi label="Inference" value={r.inference_ms ? `${r.inference_ms.toFixed(1)} ms` : "—"} sub="per 1,000 rows" />
       </div>
+
+      {interval || ensemble ? (
+        <div className="mb-6 grid gap-6 lg:grid-cols-2">
+          {interval ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Prediction interval</CardTitle>
+                <CardDescription>
+                  {interval.method === "quantile_model"
+                    ? "Learned P10 / P50 / P90 quantile models (pinball loss: lower is better)."
+                    : "Empirical P10–P90 band from validation residuals (coverage is in-sample)."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 gap-3 text-sm">
+                <span className="text-muted-foreground">P10–P90 coverage</span>
+                <span className="text-right font-medium">{formatPct(interval.coverage)} <span className="text-xs text-muted-foreground">(target 80%)</span></span>
+                <span className="text-muted-foreground">Mean band width</span>
+                <span className="text-right">{formatNumber(interval.mean_width, 2)}</span>
+                {interval.pinball_p50 !== undefined ? (
+                  <>
+                    <span className="text-muted-foreground">Pinball P10 / P50 / P90</span>
+                    <span className="text-right">
+                      {[interval.pinball_p10, interval.pinball_p50, interval.pinball_p90].map((v) => formatNumber(v, 3)).join(" / ")}
+                    </span>
+                  </>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+          {ensemble ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Ensemble comparison</CardTitle>
+                <CardDescription>
+                  Weights fitted on the {ensemble.weights_fitted_on}; all rows below scored on the {ensemble.compared_on} ({formatNumber(ensemble.holdout_rows)} rows).
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <THead><tr><TH>Model</TH><TH>Weight</TH><TH>WAPE</TH><TH>RMSE</TH><TH>Bias</TH></tr></THead>
+                  <tbody>
+                    {Object.entries(ensemble.models).map(([name, mm]) => (
+                      <TR key={name} className={name === "fitted_blend" ? "font-medium" : ""}>
+                        <TD>{name.replaceAll("_", " ")}</TD>
+                        <TD>{ensemble.weights[name] !== undefined ? formatPct(ensemble.weights[name], 0) : "—"}</TD>
+                        <TD>{formatPct(mm.wape, 2)}</TD>
+                        <TD>{formatNumber(mm.rmse, 2)}</TD>
+                        <TD>{formatPct(mm.bias_pct, 1)}</TD>
+                      </TR>
+                    ))}
+                  </tbody>
+                </Table>
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
+      ) : null}
 
       {r.status === "succeeded" ? (
         <Card className="mb-6">
