@@ -14,7 +14,20 @@ VENV="${VENV_DIR:-$REPO/.venv-gpu}"
 PYTHON="${PYTHON:-python3}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$(dirname "$VENV")/.pip-cache}"
 
-"$PYTHON" -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required (try: module load python/3.11)"'
+# Needs a *final* Python >= 3.11: Ubuntu 22.04's python3.11 is 3.11.0rc1, which recent PyTorch rejects
+# (missing sys.get_int_max_str_digits). If the interpreter is unsuitable and uv exists, use a uv-managed one.
+py_ok() { "$1" -c 'import sys; v = sys.version_info; sys.exit(0 if v >= (3, 11) and v.releaselevel == "final" else 1)' 2>/dev/null; }
+if ! py_ok "$PYTHON"; then
+  if command -v uv >/dev/null; then
+    echo "$PYTHON is not a final Python >= 3.11 - installing one with uv (user-local, no root)"
+    uv python install 3.11
+    PYTHON="$(uv python find 3.11)"
+  else
+    echo "Python 3.11+ (final release) required: module load python/3.11, or install uv (pip install --user uv)" >&2
+    exit 1
+  fi
+fi
+"$PYTHON" --version
 command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv || \
   echo "warning: nvidia-smi not found - on SLURM clusters GPUs are only visible inside a GPU job"
 
