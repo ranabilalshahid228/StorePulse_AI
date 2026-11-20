@@ -48,3 +48,8 @@ backend/outputs/
 # GPU host environment (backend/scripts/gpu/setup_env.sh)
 .venv-gpu/
 .pip-cache/
+
+# Datasets never belong in git (Kaggle terms; size) - wherever they are dropped in the tree
+**/data/raw/
+**/rossman dataset/
+**/rossmann-store-sales/
