@@ -3,11 +3,13 @@
 import {
   Area,
   Bar,
+  Cell,
   BarChart,
   CartesianGrid,
   ComposedChart,
   Legend,
   Line,
+  ReferenceLine,
   LineChart,
   ResponsiveContainer,
   Tooltip,
@@ -128,6 +130,83 @@ export function SimpleBarChart({
             radius={stacked && i < series.length - 1 ? [0, 0, 0, 0] : [3, 3, 0, 0]}
           />
         ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Ranked horizontal bars (e.g. feature importance). */
+export function HorizontalBarChart({
+  data,
+  labelKey,
+  valueKey,
+  height,
+  valueFormatter = formatCompact,
+}: {
+  data: object[];
+  labelKey: string;
+  valueKey: string;
+  height?: number;
+  valueFormatter?: (v: number) => string;
+}) {
+  const h = height ?? Math.max(160, data.length * 22 + 24);
+  return (
+    <ResponsiveContainer width="100%" height={h}>
+      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
+        <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" horizontal={false} />
+        <XAxis type="number" tick={axis} tickLine={false} axisLine={false} tickFormatter={valueFormatter} />
+        <YAxis type="category" dataKey={labelKey} tick={axis} tickLine={false} axisLine={false} width={150} interval={0} />
+        <Tooltip {...tooltipStyle} cursor={{ fill: "var(--muted)" }} formatter={(v) => valueFormatter(Number(v))} />
+        <Bar dataKey={valueKey} fill="var(--chart-1)" radius={[0, 3, 3, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+export interface WaterfallStep {
+  label: string;
+  value: number;
+  /** Totals are drawn from zero; other steps float from the running total. */
+  total?: boolean;
+}
+
+/** P&L bridge: revenue → deductions → profit. Positive steps use --chart-1, negative --chart-4. */
+export function WaterfallChart({
+  steps,
+  height = 300,
+  valueFormatter = formatCompact,
+}: {
+  steps: WaterfallStep[];
+  height?: number;
+  valueFormatter?: (v: number) => string;
+}) {
+  let running = 0;
+  // Floating range bars [low, high] draw correctly even when the running total crosses zero (losses).
+  const data = steps.map((s) => {
+    const start = s.total ? 0 : running;
+    const end = s.total ? s.value : running + s.value;
+    running = end;
+    const kind = s.total ? "total" : s.value >= 0 ? "up" : "down";
+    return { label: s.label, range: [Math.min(start, end), Math.max(start, end)], value: s.value, kind };
+  });
+  const fill = (k: string) => (k === "total" ? "var(--chart-2)" : k === "up" ? "var(--chart-1)" : "var(--chart-4)");
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+        {grid}
+        <XAxis dataKey="label" tick={axis} tickLine={false} axisLine={false} interval={0} />
+        <YAxis tick={axis} tickLine={false} axisLine={false} tickFormatter={valueFormatter} width={56} />
+        <ReferenceLine y={0} stroke="var(--border)" />
+        <Tooltip
+          {...tooltipStyle}
+          cursor={{ fill: "var(--muted)" }}
+          formatter={(_v, _n, item) => [valueFormatter((item.payload as { value: number }).value), "Amount"]}
+        />
+        <Bar dataKey="range" radius={[3, 3, 3, 3]} isAnimationActive={false}>
+          {data.map((d) => (
+            <Cell key={d.label} fill={fill(d.kind)} />
+          ))}
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   );

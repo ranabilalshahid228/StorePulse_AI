@@ -17,6 +17,7 @@ Data rules (see CLAUDE.md "No mock data"):
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -1115,9 +1116,14 @@ def run_autopilot(
         )
     basket = basket_profile(basket_hist, cols.promo, settings.basket_lookback_days)
 
-    common = {"target_type": target_type, "finance": finance, "settings": settings, "basket": basket}
-    scen = _plan(scen_days, scenario=scenario, **common)
-    base = _plan(base_days, scenario=None, **common) if not scenario.is_empty else None
+    common = {"target_type": target_type, "settings": settings, "basket": basket}
+    fin_s = (
+        dataclasses.replace(finance, hourly_wage=scenario.hourly_wage)
+        if scenario.hourly_wage is not None
+        else finance
+    )
+    scen = _plan(scen_days, scenario=scenario, finance=fin_s, **common)
+    base = _plan(base_days, scenario=None, finance=finance, **common) if not scenario.is_empty else None
     plan = scen["plan"]
     if base is not None:
         plan["baseline_revenue_p50"] = base["plan"]["revenue_p50"].to_numpy()
@@ -1146,7 +1152,7 @@ def run_autopilot(
         scenario=scenario,
         anomalies=anomalies,
         metrics=metrics,
-        finance=finance,
+        finance=fin_s,
         settings=settings,
         currency=currency,
         cold=cold_info,
@@ -1172,7 +1178,21 @@ def run_autopilot(
         "break_even_revenue": totals["break_even_revenue"],
         "margin_of_safety_pct": totals["margin_of_safety_pct"],
         "footfall": round(float(plan["footfall"].sum()), 1),
+        "footfall_p10": round(float(plan["footfall_p10"].sum()), 1),
+        "footfall_p90": round(float(plan["footfall_p90"].sum()), 1),
+        "demand_p10": round(float(plan["demand_p10"].sum()), 2),
+        "demand_p50": round(float(plan["demand_p50"].sum()), 2),
+        "demand_p90": round(float(plan["demand_p90"].sum()), 2),
         "labor_hours": round(float(plan["labor_hours"].sum()), 2),
+        "avg_staff_per_open_day": round(
+            float(
+                plan.loc[plan["is_open"], [f"staff_{s['name']}" for s in layout]].sum(axis=1).mean()
+                + plan.loc[plan["is_open"], "surge_staff"].mean()
+            ),
+            1,
+        )
+        if plan["is_open"].any()
+        else 0.0,
         "labor_cost": totals["labor_cost"],
         "peak_staff_per_shift": int(scen["shifts"]["headcount"].max()) if len(scen["shifts"]) else 0,
         "understaffed_shifts": int((scen["shifts"]["status"] == "understaffed").sum()),
@@ -1214,7 +1234,7 @@ def run_autopilot(
         + ".",
         f"Peak hour carries {settings.peak_hour_share:.0%} of daily footfall; gaps are covered by "
         f"{settings.surge_block_hours:g} h floaters. Labour cost = scheduled hours x"
-        f" {finance.hourly_wage:.2f}.",
+        f" {fin_s.hourly_wage:.2f}.",
         "Closed days (Open = 0): sales, footfall and shifts are 0.",
         "Future covariates: "
         + (

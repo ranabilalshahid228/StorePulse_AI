@@ -113,6 +113,7 @@ class AutopilotScenario(BaseModel):
     )
     cogs_pct: float | None = Field(default=None, ge=0, le=1, description="Margin adjustment: COGS override")
     promo_discount_pct: float | None = Field(default=None, ge=0, lt=1)
+    hourly_wage: float | None = Field(default=None, ge=0, le=1000, description="Cost lever: wage override")
 
     @property
     def is_empty(self) -> bool:
@@ -120,7 +121,8 @@ class AutopilotScenario(BaseModel):
             not self.levers
             and self.promo2 is None
             and self.cogs_pct is None
-            and (self.promo_discount_pct is None)
+            and self.promo_discount_pct is None
+            and self.hourly_wage is None
         )
 
     @property

@@ -59,6 +59,8 @@ export default function DataPage() {
         </CardContent>
       </Card>
 
+      <StoreMetadataCard />
+
       <Card>
         <CardHeader><CardTitle>Datasets</CardTitle></CardHeader>
         <CardContent>
@@ -92,5 +94,55 @@ export default function DataPage() {
         </CardContent>
       </Card>
     </>
+  );
+}
+
+/** Store attributes (Rossmann store.csv): type, assortment, competition, Promo2 - used as model
+ * features, for cold-start cohorts and EDA segments. */
+function StoreMetadataCard() {
+  const qc = useQueryClient();
+  const [formKey, setFormKey] = useState(0);
+  const imp = useMutation({
+    mutationFn: (fd: FormData) => api.post<unknown[]>("/stores/import", fd),
+    onSuccess: () => {
+      setFormKey((k) => k + 1);
+      void qc.invalidateQueries({ queryKey: ["stores"] });
+    },
+  });
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Store metadata</CardTitle>
+        <CardDescription>
+          Optional CSV with one row per store (Rossmann store.csv columns or Store field names). Adds store type, assortment,
+          competition and Promo2 features, enables cold-start cohorts and EDA segments. Re-train models afterwards.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form
+          key={formKey}
+          onSubmit={(e: FormEvent<HTMLFormElement>) => {
+            e.preventDefault();
+            imp.mutate(new FormData(e.currentTarget));
+          }}
+          className="grid items-end gap-4 md:grid-cols-[1fr_8rem_10rem_auto]"
+        >
+          <Field label="File"><Input name="file" type="file" accept=".csv" required /></Field>
+          <Field label="Currency"><Input name="currency" defaultValue="EUR" maxLength={3} /></Field>
+          <Field label="Target type">
+            <Select name="target_type" defaultValue="sales">
+              <option value="sales">Sales (revenue)</option>
+              <option value="units">Units</option>
+              <option value="customers">Customers</option>
+            </Select>
+          </Field>
+          <Button type="submit" variant="secondary" disabled={imp.isPending}>
+            <Upload /> {imp.isPending ? "Importing…" : "Import stores"}
+          </Button>
+        </form>
+        <div className="mt-3"><ErrorNotice error={imp.error} /></div>
+        {imp.isSuccess ? <p className="mt-2 text-xs text-success">Imported {imp.data.length} store(s).</p> : null}
+      </CardContent>
+    </Card>
   );
 }

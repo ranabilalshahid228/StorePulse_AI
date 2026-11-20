@@ -154,6 +154,37 @@ def _fit_once(
     return model, logs, preds
 
 
+def residual_diagnostics(data: PreparedData, preds: np.ndarray) -> dict[str, Any]:
+    """Where the validation error comes from: by weekday, by week ahead (accuracy decay with lead
+    time) and the distribution of percentage errors on non-zero actuals."""
+    y = np.asarray(data.y_val, dtype="float64")
+    p = np.asarray(preds, dtype="float64")
+    ds = pd.to_datetime(data.val_frame["ds"]).reset_index(drop=True)
+    frame = pd.DataFrame({"y": y, "p": p, "dow": ds.dt.dayofweek, "week": (ds - ds.min()).dt.days // 7 + 1})
+
+    def summary(g: pd.DataFrame) -> dict[str, float | None]:
+        tot = float(np.abs(g["y"]).sum())
+        err = float((g["p"] - g["y"]).sum())
+        return {
+            "wape": round(float(np.abs(g["p"] - g["y"]).sum()) / tot, 5) if tot else None,
+            "bias_pct": round(err / tot, 5) if tot else None,
+            "n": int(len(g)),
+        }
+
+    days = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    nz = frame[frame["y"] > 0]
+    pct = (nz["p"] - nz["y"]) / nz["y"]
+    return {
+        "by_weekday": [{"dow": days[int(k)], **summary(g)} for k, g in frame.groupby("dow")],
+        "by_week_ahead": [{"week": int(k), **summary(g)} for k, g in frame.groupby("week")],
+        "pct_error_quantiles": {
+            f"p{q:02d}": round(float(pct.quantile(q / 100)), 5) for q in (5, 10, 25, 50, 75, 90, 95)
+        }
+        if len(pct)
+        else {},
+    }
+
+
 def _holdout_coverage(data: PreparedData, preds: np.ndarray) -> float | None:
     """Out-of-sample check of the empirical band: calibrate on the first half of the validation
     window, measure P10-P90 coverage on the second half."""
@@ -192,6 +223,7 @@ def evaluate_model(model: ForecastModel, data: PreparedData, preds: np.ndarray) 
             q = {0.1: lo, 0.5: preds, 0.9: hi}
             metrics["interval"] = {**interval, **interval_metrics(data.y_val, lo, hi, q)}
             metrics["interval"]["coverage_holdout"] = _holdout_coverage(data, preds)
+    metrics["residuals"] = residual_diagnostics(data, preds)
     comparison = getattr(model, "comparison", None)
     if comparison:
         metrics["ensemble"] = comparison
@@ -293,7 +325,9 @@ def train(
     )
     device = resolve_device(get_settings().training_device, FAMILIES[family])
     progress.update(0.1, "training", message=f"device={device}", force=True)
+    t0 = time.perf_counter()
     model, logs, preds = _fit_once(family, data, params, device, progress.sub(0.1, 0.85))
+    fit_seconds = round(time.perf_counter() - t0, 2)
     result = _finalize(
         org_id=org_id,
         run_id=run_id,
@@ -305,6 +339,7 @@ def train(
         progress=progress.sub(0.85, 1.0),
     )
     result["device"] = device
+    result["metrics"]["fit_seconds"] = fit_seconds
     return result
 
 
@@ -405,7 +440,9 @@ def tune(
         # Neural nets: fix the epoch count found on the inner split; no early stopping on the final window.
         best_params |= {"max_epochs": max(1, best_epochs[study.best_trial.number]), "patience": 0}
     progress.update(0.86, "training_best", force=True)
+    t0 = time.perf_counter()
     model, logs, preds = _fit_once(family, data, best_params, device, progress.sub(0.86, 0.93))
+    fit_seconds = round(time.perf_counter() - t0, 2)
     result = _finalize(
         org_id=org_id,
         run_id=run_id,
@@ -416,6 +453,7 @@ def tune(
         logs=logs,
         progress=progress.sub(0.93, 1.0),
     )
+    result["metrics"]["fit_seconds"] = fit_seconds
     result["metrics"]["tuning"] = {
         "scheme": "inner split of the training period",
         "inner_validation_days": validation_days,

@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import type { HealthReport, SchemaMapping } from "@/lib/types";
 import { useDataset, useDatasets } from "@/hooks/queries";
 import { JoinsEditor } from "@/components/joins-editor";
+import { EdaStudio } from "@/components/eda";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Select, Skeleton, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
 import { ErrorNotice, JobProgress, Kpi, PageHeader, StatusBadge } from "@/components/shared";
@@ -36,7 +37,12 @@ export default function DatasetPage({ params }: { params: Promise<{ datasetId: s
       {ds.role === "primary" && (ds.status === "mapping_required" || ds.status === "failed") ? (
         <MappingForm datasetId={ds.id} columns={(ds.column_profile.columns ?? []).map((c) => c.name)} suggested={ds.schema_mapping ?? ds.suggested_mapping} />
       ) : null}
-      {ds.role === "primary" && ds.status === "ready" ? <HealthAndEda datasetId={ds.id} /> : null}
+      {ds.role === "primary" && ds.status === "ready" ? (
+        <>
+          <HealthAndEda datasetId={ds.id} />
+          <EdaStudio datasetId={ds.id} />
+        </>
+      ) : null}
       <ColumnProfileCard columns={ds.column_profile.columns ?? []} />
     </>
   );
@@ -198,7 +204,7 @@ function HealthAndEda({ datasetId }: { datasetId: string }) {
         </Card>
       </div>
       <Card className="mb-6">
-        <CardHeader><CardTitle>Diagnostics</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Data-health audit</CardTitle><CardDescription>Findings that lower the health score; fix critical ones before training</CardDescription></CardHeader>
         <CardContent>
           {r.issues.length ? (
             <ul className="flex flex-col gap-2">

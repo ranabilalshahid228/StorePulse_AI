@@ -416,3 +416,16 @@ def test_rossmann_cold_start_store(rossmann_ctx: dict, progress, tmp_path: Path)
     df[df["store_code"] != "3"].to_parquet(none_left, index=False)
     res0 = _run(rossmann_ctx, progress, parquet_path=none_left, store_code="3")
     assert res0["cold_start"]["scale"] == 1.0 and res0["cold_start"]["open_days"] == 0
+
+
+def test_rossmann_wage_override_and_workforce_kpis(rossmann_ctx: dict, progress) -> None:  # noqa: ANN001
+    base = _run(rossmann_ctx, progress)
+    res = _run(rossmann_ctx, progress, scenario=AutopilotScenario(hourly_wage=FIN.hourly_wage * 2))
+    assert res["kpis"]["labor_hours"] == base["kpis"]["labor_hours"]
+    assert res["kpis"]["labor_cost"] == pytest.approx(base["kpis"]["labor_cost"] * 2, abs=0.05)
+    assert res["scenario_impact"]["labor_cost"] == pytest.approx(base["kpis"]["labor_cost"], abs=0.05)
+    assert any(f"{FIN.hourly_wage * 2:.2f}" in a for a in res["assumptions"])
+    k = res["kpis"]
+    assert k["footfall_p10"] <= k["footfall"] <= k["footfall_p90"]
+    assert k["demand_p10"] <= k["demand_p50"] <= k["demand_p90"]
+    assert k["avg_staff_per_open_day"] >= 3 * FIN.min_staff_per_shift

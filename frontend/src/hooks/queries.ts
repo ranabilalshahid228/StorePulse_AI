@@ -25,6 +25,7 @@ export const useDatasets = () =>
 export const useDataset = (id: string) =>
   useQuery({
     queryKey: ["dataset", id],
+    enabled: !!id,
     queryFn: () => api.get<Dataset>(`/datasets/${id}`),
     refetchInterval: pollWhileActive<Dataset>((d) => [d as Dataset]),
   });

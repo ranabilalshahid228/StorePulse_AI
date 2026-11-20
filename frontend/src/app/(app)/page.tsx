@@ -4,18 +4,21 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { ForecastPoint } from "@/lib/types";
-import { useDatasets, useForecasts, useModelRuns, useStores } from "@/hooks/queries";
+import { useAutopilotRuns, useDatasets, useForecasts, useModelRuns, useStores } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
 import { EmptyState, JobProgress, Kpi, PageHeader } from "@/components/shared";
 import { ForecastBandChart } from "@/components/charts";
-import { formatCompact, formatDateTime, formatPct } from "@/lib/utils";
+import { formatCompact, formatCurrency, formatDateTime, formatPct } from "@/lib/utils";
 
 export default function CommandCenter() {
   const stores = useStores();
   const datasets = useDatasets();
   const runs = useModelRuns();
   const forecasts = useForecasts();
+  const plans = useAutopilotRuns();
+  const latestPlan = plans.data?.items.find((p) => p.status === "succeeded");
+  const planStore = stores.data?.items.find((s) => s.id === latestPlan?.store_id);
 
   const latest = forecasts.data?.items.find((f) => f.status === "succeeded");
   const series = useQuery({
@@ -37,6 +40,9 @@ export default function CommandCenter() {
     ...(forecasts.data?.items ?? [])
       .filter((f) => ["queued", "running"].includes(f.status))
       .map((f) => job(f, "Forecast", `${f.horizon_days}-day ${f.kind.replace("_", " ")}`)),
+    ...(plans.data?.items ?? [])
+      .filter((p) => ["queued", "running"].includes(p.status))
+      .map((p) => job(p, "Autopilot", `${p.horizon.replace("_", " ")} plan`)),
   ];
   const totals = latest?.summary.horizon_totals ?? {};
   const totalKeys = Object.keys(totals);
@@ -60,8 +66,34 @@ export default function CommandCenter() {
           sub={latest ? `${latest.summary.start_date} → ${latest.summary.end_date}` : "No forecast yet"}
         />
         <Kpi label="Best validation WAPE" value={bestRun ? formatPct(bestRun.metrics.wape as number) : "—"} sub={bestRun ? bestRun.model_family : "Train a model in Model Lab"} />
-        <Kpi label="Active jobs" value={active.length} sub="ingestion · training · forecasting" />
+        <Kpi label="Active jobs" value={active.length} sub="ingestion · training · forecasting · autopilot" />
       </div>
+
+      {latestPlan ? (
+        <Card className="mt-6">
+          <CardContent className="flex flex-wrap items-center gap-x-8 gap-y-3 p-5">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Latest Autopilot plan</p>
+              <p className="text-sm font-medium">
+                Store {planStore?.code ?? "—"} · {latestPlan.summary.window_start} → {latestPlan.summary.window_end}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Revenue P50</p>
+              <p className="font-semibold tabular-nums">{formatCurrency(latestPlan.summary.revenue_p50 ?? null, planStore?.currency)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Net profit P50</p>
+              <p className="font-semibold tabular-nums">{formatCurrency(latestPlan.summary.net_profit_p50 ?? null, planStore?.currency)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">High-priority actions</p>
+              <p className="font-semibold tabular-nums">{latestPlan.summary.recommendations?.high ?? 0}</p>
+            </div>
+            <Button asChild size="sm" variant="outline" className="ml-auto"><Link href="/autopilot">Open Autopilot</Link></Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">

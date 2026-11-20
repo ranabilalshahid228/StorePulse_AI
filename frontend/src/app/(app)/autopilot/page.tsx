@@ -1,58 +1,85 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Download, FileSpreadsheet, FileText, Plus, Rocket, Trash2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Plus, RotateCcw, Rocket, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ApiError, api } from "@/lib/api";
 import type {
   AutopilotRequest,
   AutopilotResult,
   AutopilotRun,
+  AutopilotScenario,
+  FinancialConfig,
+  HealthReport,
   HorizonKind,
   LeverKind,
-  Priority,
+  ModelRun,
   ScenarioLever,
 } from "@/lib/types";
-import { useAutopilotRun, useAutopilotRuns, useModelRuns, useStores } from "@/hooks/queries";
+import { useAutopilotRun, useAutopilotRuns, useDataset, useModelRuns, useStores } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
+import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Select, Skeleton, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
+import { EmptyState, ErrorNotice, JobProgress, PageHeader } from "@/components/shared";
 import {
-  Badge,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  Field,
-  Input,
-  Select,
-  Skeleton,
-  Table,
-  TD,
-  TH,
-  THead,
-  TR,
-} from "@/components/ui/primitives";
-import { EmptyState, ErrorNotice, JobProgress, Kpi, PageHeader } from "@/components/shared";
-import { RevenuePlanChart, SimpleBarChart } from "@/components/charts";
-import { formatCurrency, formatDateTime, formatNumber, formatPct } from "@/lib/utils";
+  AlertBanners,
+  AssumptionsCard,
+  ExportButtons,
+  PlanKpis,
+  PnlWaterfallCard,
+  ProfitCard,
+  RecommendationsFeed,
+  RevenueCard,
+  ShiftRoster,
+  StaffingCard,
+} from "@/components/autopilot";
+import { cn, formatDateTime, formatNumber, formatPct } from "@/lib/utils";
 
-const HORIZONS: { value: HorizonKind; label: string }[] = [
-  { value: "next_day", label: "Next day" },
-  { value: "week", label: "Next 7 days" },
-  { value: "month", label: "Next 30 days" },
-  { value: "custom", label: "Custom range" },
+const HORIZONS: { value: HorizonKind; label: string; days?: number }[] = [
+  { value: "next_day", label: "Next day", days: 1 },
+  { value: "week", label: "7 days", days: 7 },
+  { value: "month", label: "30 days", days: 30 },
+  { value: "custom", label: "Custom" },
 ];
 const LEVER_KINDS: LeverKind[] = ["promo", "holiday", "closure", "local_event", "competitor", "price", "custom"];
-const PRIORITY_TONE: Record<Priority, "danger" | "warning" | "info" | "neutral"> = {
-  critical: "danger",
-  high: "danger",
-  medium: "warning",
-  low: "info",
-};
 
 type Tri = "" | "on" | "off";
 const tri = (v: Tri): boolean | null => (v === "" ? null : v === "on");
+const num = (v: string): number | null => (v.trim() === "" ? null : Number(v));
+
+const addDays = (iso: string, n: number) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+interface Simulator {
+  promo: Tri;
+  schoolHoliday: Tri;
+  stateHoliday: string;
+  promo2: Tri;
+  promo2Interval: string;
+  demandPct: number;
+  marginPct: string;
+  hourlyWage: string;
+  elasticity: string;
+  priceChangePct: string;
+  noPromoDefault: boolean;
+}
+
+const EMPTY_SIM: Simulator = {
+  promo: "",
+  schoolHoliday: "",
+  stateHoliday: "",
+  promo2: "",
+  promo2Interval: "",
+  demandPct: 0,
+  marginPct: "",
+  hourlyWage: "",
+  elasticity: "",
+  priceChangePct: "",
+  noPromoDefault: false,
+};
 
 interface LeverDraft {
   name: string;
@@ -67,11 +94,11 @@ interface LeverDraft {
   price_change_pct: string;
 }
 
-const emptyLever = (): LeverDraft => ({
+const emptyLever = (start = ""): LeverDraft => ({
   name: "",
-  kind: "promo",
-  start_date: "",
-  end_date: "",
+  kind: "local_event",
+  start_date: start,
+  end_date: start,
   promo: "",
   school_holiday: "",
   open: "",
@@ -80,10 +107,10 @@ const emptyLever = (): LeverDraft => ({
   price_change_pct: "",
 });
 
-function toLever(d: LeverDraft): ScenarioLever {
+function leverFromDraft(d: LeverDraft): ScenarioLever {
   const pct = (v: string) => (v.trim() === "" ? null : Number(v) / 100);
   return {
-    name: d.name || d.kind,
+    name: d.name || d.kind.replace("_", " "),
     kind: d.kind,
     start_date: d.start_date,
     end_date: d.end_date || d.start_date,
@@ -96,15 +123,78 @@ function toLever(d: LeverDraft): ScenarioLever {
   };
 }
 
-export default function AutopilotPage() {
+/** Whole-window quick toggles + dated events -> the API scenario. */
+function buildScenario(sim: Simulator, events: LeverDraft[], window: { start: string; end: string } | null): AutopilotScenario {
+  const levers: ScenarioLever[] = [];
+  const quick: Partial<ScenarioLever> = {
+    promo: tri(sim.promo),
+    school_holiday: tri(sim.schoolHoliday),
+    state_holiday: sim.stateHoliday || null,
+    demand_pct: sim.demandPct ? sim.demandPct / 100 : null,
+    price_change_pct: num(sim.priceChangePct) !== null ? Number(sim.priceChangePct) / 100 : null,
+  };
+  if (window && Object.values(quick).some((v) => v !== null)) {
+    const kind: LeverKind = quick.promo !== null ? "promo" : quick.price_change_pct !== null ? "price" : quick.demand_pct !== null ? "local_event" : "holiday";
+    levers.push({ name: "Simulator (whole window)", kind, start_date: window.start, end_date: window.end, ...quick });
+  }
+  levers.push(...events.filter((e) => e.start_date).map(leverFromDraft));
+  const margin = num(sim.marginPct);
+  return {
+    levers,
+    promo2: tri(sim.promo2),
+    promo2_interval: sim.promo2Interval || null,
+    covariate_defaults: sim.noPromoDefault ? { Promo: 0 } : {},
+    cogs_pct: margin === null ? null : 1 - margin / 100,
+    hourly_wage: num(sim.hourlyWage),
+    price_elasticity: num(sim.elasticity),
+  };
+}
+
+export default function AutopilotDashboard() {
   const qc = useQueryClient();
   const stores = useStores();
   const models = useModelRuns();
   const [storeId, setStoreId] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [horizon, setHorizon] = useState<HorizonKind>("week");
+  const [custom, setCustom] = useState({ start: "", end: "" });
+  const [sim, setSim] = useState<Simulator>(EMPTY_SIM);
+  const [events, setEvents] = useState<LeverDraft[]>([]);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
+
   const sid = storeId || stores.data?.items.find((s) => s.has_financial_config)?.id || stores.data?.items[0]?.id || "";
+  const store = stores.data?.items.find((s) => s.id === sid);
+  const usable = (models.data?.items ?? []).filter((m) => m.status === "succeeded" && (!m.store_id || m.store_id === sid));
+  const model: ModelRun | undefined = usable.find((m) => m.id === modelId) ?? usable[0];
+  const dataset = useDataset(model?.dataset_id ?? "");
+  const features = new Set(model?.feature_columns ?? []);
+  const config = useQuery({
+    queryKey: ["fin-config", sid],
+    enabled: !!sid,
+    queryFn: async () => {
+      try {
+        return await api.get<FinancialConfig>(`/stores/${sid}/financial-config`);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+  });
   const runs = useAutopilotRuns(sid || undefined);
   const runId = selectedRun ?? runs.data?.items[0]?.id ?? null;
+
+  const dataEnd = dataset.data?.date_max ?? null;
+  const first = dataEnd ? addDays(dataEnd, 1) : null;
+  const span = HORIZONS.find((h) => h.value === horizon)?.days;
+  const window =
+    horizon === "custom"
+      ? custom.start && custom.end
+        ? custom
+        : null
+      : first && span
+        ? { start: first, end: addDays(first, span - 1) }
+        : null;
+  const maxDate = dataEnd && model ? addDays(dataEnd, model.horizon_days) : undefined;
 
   const create = useMutation({
     mutationFn: (body: AutopilotRequest) => api.post<{ id: string }>("/autopilot/runs", body),
@@ -113,255 +203,293 @@ export default function AutopilotPage() {
       void qc.invalidateQueries({ queryKey: ["autopilot-runs"] });
     },
   });
+  const run = () =>
+    model &&
+    create.mutate({
+      store_id: sid,
+      model_run_id: model.id,
+      horizon,
+      start_date: horizon === "custom" ? custom.start : null,
+      end_date: horizon === "custom" ? custom.end : null,
+      scenario: buildScenario(sim, events, window),
+    });
 
-  const loading = stores.isLoading || models.isLoading;
-  const finishedModels = models.data?.items.filter((m) => m.status === "succeeded") ?? [];
+  if (stores.isLoading || models.isLoading) {
+    return (
+      <>
+        <PageHeader title="Store Autopilot" />
+        <div className="grid gap-4 md:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)}</div>
+      </>
+    );
+  }
+  if (stores.error || models.error) return <ErrorNotice error={stores.error ?? models.error} />;
+  if (!(models.data?.items ?? []).some((m) => m.status === "succeeded")) {
+    return (
+      <>
+        <PageHeader title="Store Autopilot" />
+        <EmptyState
+          title="No trained models yet"
+          description="Upload sales history, train a model in Model Lab, then plan stores here."
+          action={<Button asChild size="sm"><Link href="/model-lab">Open Model Lab</Link></Button>}
+        />
+      </>
+    );
+  }
+
+  const simChanges = [
+    sim.promo && `promo ${sim.promo}`,
+    sim.schoolHoliday && `school holiday ${sim.schoolHoliday}`,
+    sim.stateHoliday && `state holiday ${sim.stateHoliday}`,
+    sim.promo2 && `Promo2 ${sim.promo2}`,
+    sim.demandPct && `demand ${sim.demandPct > 0 ? "+" : ""}${sim.demandPct}%`,
+    sim.priceChangePct && `price ${sim.priceChangePct}%`,
+    sim.marginPct && `margin ${sim.marginPct}%`,
+    sim.hourlyWage && `wage ${sim.hourlyWage}`,
+    sim.noPromoDefault && "no default promos",
+    events.length && `${events.length} event(s)`,
+  ].filter(Boolean) as string[];
 
   return (
     <>
       <PageHeader
         title="Store Autopilot"
-        description="Plan a store's next day, week, month or any range: forecast with P10–P90 bands, footfall, P&L, shift plan and prioritized actions — with what-if scenarios."
+        description="Executive plan for one store: demand with P10–P90 ranges, footfall, profit and staffing — and what-if simulation before you commit."
       />
-      {loading ? (
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Skeleton className="h-96" />
-          <Skeleton className="h-96 lg:col-span-2" />
-        </div>
-      ) : !finishedModels.length ? (
-        <EmptyState
-          title="No trained models yet"
-          description="Train a model on your sales history in Model Lab, then plan stores here."
-          action={<Button asChild size="sm"><Link href="/model-lab">Open Model Lab</Link></Button>}
-        />
-      ) : !stores.data?.items.length ? (
-        <EmptyState title="No stores yet" description="Stores appear after a dataset with a store column is processed." />
-      ) : (
-        <div className="grid gap-6 xl:grid-cols-3">
-          <div className="flex flex-col gap-6">
-            <PlanForm
-              storeId={sid}
-              onStore={(id) => {
-                setStoreId(id);
+
+      <Card className="mb-6">
+        <CardContent className="flex flex-wrap items-end gap-4 p-5">
+          <Field label="Store">
+            <Select
+              value={sid}
+              onChange={(e) => {
+                setStoreId(e.target.value);
                 setSelectedRun(null);
               }}
-              onSubmit={(body) => create.mutate(body)}
-              pending={create.isPending}
-              error={create.error}
-            />
-            <RunList runs={runs.data?.items ?? []} loading={runs.isLoading} error={runs.error} active={runId} onSelect={setSelectedRun} />
+              className="w-56"
+            >
+              {stores.data?.items.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.code} — {s.name}{s.has_financial_config ? "" : " (no config)"}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Model">
+            <Select value={model?.id ?? ""} onChange={(e) => setModelId(e.target.value)} className="w-72">
+              {usable.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name ?? m.model_family} · {m.model_family} · {m.horizon_days} d · acc {formatPct(m.metrics.wape !== undefined ? 1 - m.metrics.wape : null)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Horizon</span>
+            <div role="tablist" className="inline-flex h-9 rounded-md border bg-muted p-0.5">
+              {HORIZONS.map((h) => (
+                <button
+                  key={h.value}
+                  role="tab"
+                  aria-selected={horizon === h.value}
+                  onClick={() => setHorizon(h.value)}
+                  className={cn(
+                    "rounded px-3 text-sm transition-colors",
+                    horizon === h.value ? "bg-card font-medium shadow-xs" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {h.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="xl:col-span-2">
-            {runId ? <RunDetail id={runId} /> : <EmptyState title="No plans for this store yet" description="Configure a horizon and optional scenario, then run the Autopilot." />}
+          {horizon === "custom" ? (
+            <>
+              <Field label="From"><Input type="date" min={first ?? undefined} max={maxDate} value={custom.start} onChange={(e) => setCustom({ ...custom, start: e.target.value })} /></Field>
+              <Field label="To"><Input type="date" min={custom.start || first || undefined} max={maxDate} value={custom.end} onChange={(e) => setCustom({ ...custom, end: e.target.value })} /></Field>
+            </>
+          ) : null}
+          <div className="ml-auto flex flex-col items-end gap-1">
+            <Button onClick={run} disabled={create.isPending || !model || !store?.has_financial_config || (horizon === "custom" && !window)}>
+              <Rocket /> {create.isPending ? "Queuing…" : simChanges.length ? "Simulate scenario" : "Run plan"}
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              {window ? `${window.start} → ${window.end}` : dataEnd ? "Pick dates" : "…"}
+              {dataEnd ? ` · data through ${dataEnd}` : ""}
+            </span>
           </div>
+        </CardContent>
+      </Card>
+      {store && !store.has_financial_config ? (
+        <p className="mb-6 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          This store has no financial & staffing configuration yet — set it on the&nbsp;<Link className="underline" href="/stores">Stores</Link>&nbsp;page.
+        </p>
+      ) : null}
+      <ErrorNotice error={create.error} />
+
+      <div className="mt-6 grid gap-6 xl:grid-cols-[22rem_1fr]">
+        <div className="flex flex-col gap-6">
+          <SimulatorCard
+            sim={sim}
+            setSim={setSim}
+            events={events}
+            setEvents={setEvents}
+            features={features}
+            config={config.data ?? null}
+            defaultStart={window?.start ?? first ?? ""}
+            changes={simChanges}
+          />
+          <RunList runs={runs.data?.items ?? []} loading={runs.isLoading} error={runs.error} active={runId} onSelect={setSelectedRun} />
         </div>
-      )}
+        <div className="min-w-0">
+          {runId ? (
+            <RunDetail id={runId} datasetId={model?.dataset_id} />
+          ) : (
+            <EmptyState title="No plans for this store yet" description="Pick a horizon, optionally simulate a scenario, then run the Autopilot." />
+          )}
+        </div>
+      </div>
     </>
   );
 }
 
-function PlanForm({
-  storeId,
-  onStore,
-  onSubmit,
-  pending,
-  error,
+function SimulatorCard({
+  sim,
+  setSim,
+  events,
+  setEvents,
+  features,
+  config,
+  defaultStart,
+  changes,
 }: {
-  storeId: string;
-  onStore: (id: string) => void;
-  onSubmit: (body: AutopilotRequest) => void;
-  pending: boolean;
-  error: unknown;
+  sim: Simulator;
+  setSim: (s: Simulator) => void;
+  events: LeverDraft[];
+  setEvents: (e: LeverDraft[] | ((e: LeverDraft[]) => LeverDraft[])) => void;
+  features: Set<string>;
+  config: FinancialConfig | null;
+  defaultStart: string;
+  changes: string[];
 }) {
-  const stores = useStores();
-  const models = useModelRuns();
-  const store = stores.data?.items.find((s) => s.id === storeId);
-  const usable = (models.data?.items ?? []).filter(
-    (m) => m.status === "succeeded" && (!m.store_id || m.store_id === storeId),
-  );
-  const [modelId, setModelId] = useState("");
-  const mid = modelId || usable[0]?.id || "";
-  const model = usable.find((m) => m.id === mid);
-  const features = new Set(model?.feature_columns ?? []);
-  const [horizon, setHorizon] = useState<HorizonKind>("week");
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
-  const [noPromoDefault, setNoPromoDefault] = useState(false);
-  const [levers, setLevers] = useState<LeverDraft[]>([]);
-  const [promo2, setPromo2] = useState<Tri>("");
-  const [promo2Interval, setPromo2Interval] = useState("");
-  const [cogs, setCogs] = useState("");
-  const [elasticity, setElasticity] = useState("");
-
-  const update = (i: number, patch: Partial<LeverDraft>) =>
-    setLevers((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
-
-  function submit() {
-    onSubmit({
-      store_id: storeId,
-      model_run_id: mid,
-      horizon,
-      start_date: horizon === "custom" ? start : null,
-      end_date: horizon === "custom" ? end : null,
-      scenario: {
-        levers: levers.filter((l) => l.start_date).map(toLever),
-        promo2: tri(promo2),
-        promo2_interval: promo2Interval || null,
-        covariate_defaults: noPromoDefault ? { Promo: 0 } : {},
-        cogs_pct: cogs.trim() === "" ? null : Number(cogs) / 100,
-        price_elasticity: elasticity.trim() === "" ? null : Number(elasticity),
-      },
-    });
-  }
-
+  const set = (patch: Partial<Simulator>) => setSim({ ...sim, ...patch });
+  const update = (i: number, patch: Partial<LeverDraft>) => setEvents((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  const cfgMargin = config ? Math.round((1 - Number(config.cogs_pct)) * 1000) / 10 : null;
+  const hasState = [...features].some((f) => f.startsWith("StateHoliday"));
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Plan</CardTitle>
-        <CardDescription>Horizons start the day after the latest data and must fit the model&apos;s trained horizon.</CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-2">
+        <div>
+          <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-4" /> What-if simulator</CardTitle>
+          <CardDescription>Toggles apply to the whole window; add dated events below. Every simulation is compared with the baseline.</CardDescription>
+        </div>
+        {changes.length ? (
+          <Button size="icon" variant="ghost" aria-label="Reset simulator" onClick={() => { setSim(EMPTY_SIM); setEvents([]); }}>
+            <RotateCcw />
+          </Button>
+        ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <Field label="Store">
-          <Select value={storeId} onChange={(e) => onStore(e.target.value)}>
-            {stores.data?.items.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.code} — {s.name}
-                {s.has_financial_config ? "" : " (no config)"}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        {store && !store.has_financial_config ? (
-          <p className="flex items-start gap-2 rounded-md bg-warning/15 p-3 text-xs">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            <span>
-              This store has no financial & staffing config yet. Set it on the <Link className="underline" href="/stores">Stores</Link> page first.
-            </span>
-          </p>
+        {changes.length ? (
+          <div className="flex flex-wrap gap-1.5">{changes.map((c) => <Badge key={c} tone="info">{c}</Badge>)}</div>
         ) : null}
-        <Field label="Model" hint={model ? `Validation accuracy ${formatPct(model.metrics.wape !== undefined ? 1 - model.metrics.wape : null)} · horizon ${model.horizon_days} d` : undefined}>
-          <Select value={mid} onChange={(e) => setModelId(e.target.value)}>
-            {usable.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name ?? m.model_family} · {m.model_family} · {m.horizon_days} d · {formatDateTime(m.finished_at)}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="Horizon">
-          <Select value={horizon} onChange={(e) => setHorizon(e.target.value as HorizonKind)}>
-            {HORIZONS.map((h) => <option key={h.value} value={h.value}>{h.label}</option>)}
-          </Select>
-        </Field>
-        {horizon === "custom" ? (
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Start"><Input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
-            <Field label="End"><Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></Field>
-          </div>
+        <div className="grid grid-cols-2 gap-3">
+          {features.has("Promo") ? <TriSelect label="Promo" value={sim.promo} onChange={(v) => set({ promo: v })} /> : null}
+          {features.has("SchoolHoliday") ? <TriSelect label="School holiday" value={sim.schoolHoliday} onChange={(v) => set({ schoolHoliday: v })} /> : null}
+          {hasState ? (
+            <Field label="State holiday">
+              <Select value={sim.stateHoliday} onChange={(e) => set({ stateHoliday: e.target.value })}>
+                <option value="">unchanged</option>
+                <option value="0">none</option>
+                <option value="a">public (a)</option>
+                <option value="b">Easter (b)</option>
+                <option value="c">Christmas (c)</option>
+              </Select>
+            </Field>
+          ) : null}
+          {features.has("st_promo2_active") ? <TriSelect label="Promo2" value={sim.promo2} onChange={(v) => set({ promo2: v })} /> : null}
+        </div>
+        {sim.promo2 === "on" ? (
+          <Field label="Promo2 months" hint="Needed if the store has no Promo2 interval yet">
+            <Input placeholder="Jan,Apr,Jul,Oct" value={sim.promo2Interval} onChange={(e) => set({ promo2Interval: e.target.value })} />
+          </Field>
         ) : null}
+        <Field label={`Demand uplift / shock: ${sim.demandPct > 0 ? "+" : ""}${sim.demandPct}%`} hint="Local event, competitor opening, weather…">
+          <input
+            type="range"
+            min={-50}
+            max={50}
+            step={5}
+            value={sim.demandPct}
+            onChange={(e) => set({ demandPct: Number(e.target.value) })}
+            className="accent-[var(--primary)]"
+            aria-label="Demand uplift or shock percent"
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Gross margin %" hint={cfgMargin !== null ? `config ${cfgMargin}%` : undefined}>
+            <Input type="number" step="0.5" min={0} max={100} placeholder={cfgMargin !== null ? String(cfgMargin) : ""} value={sim.marginPct} onChange={(e) => set({ marginPct: e.target.value })} />
+          </Field>
+          <Field label="Hourly wage" hint={config ? `config ${config.hourly_wage}` : undefined}>
+            <Input type="number" step="0.5" min={0} placeholder={config?.hourly_wage ?? ""} value={sim.hourlyWage} onChange={(e) => set({ hourlyWage: e.target.value })} />
+          </Field>
+          <Field label="Price change %">
+            <Input type="number" step="0.5" value={sim.priceChangePct} onChange={(e) => set({ priceChangePct: e.target.value })} />
+          </Field>
+          <Field label="Price elasticity" hint="blank = volume unchanged">
+            <Input type="number" step="0.1" max={0} placeholder="-1.2" value={sim.elasticity} onChange={(e) => set({ elasticity: e.target.value })} />
+          </Field>
+        </div>
         {features.has("Promo") ? (
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={noPromoDefault} onChange={(e) => setNoPromoDefault(e.target.checked)} />
-            No promos unless a lever adds them
-            <span className="text-xs text-muted-foreground">(default repeats the last weeks&apos; promo pattern)</span>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1 accent-[var(--primary)]" checked={sim.noPromoDefault} onChange={(e) => set({ noPromoDefault: e.target.checked })} />
+            <span>
+              No promos unless a lever adds them
+              <span className="block text-xs text-muted-foreground">Otherwise future promo days repeat the last observed weeks.</span>
+            </span>
           </label>
         ) : null}
 
-        <div className="border-t pt-4">
+        <div className="border-t pt-3">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-sm font-medium">What-if levers</p>
-            <Button size="sm" variant="outline" onClick={() => setLevers((l) => [...l, emptyLever()])}>
-              <Plus /> Add lever
+            <p className="text-sm font-medium">Dated events</p>
+            <Button size="sm" variant="outline" onClick={() => setEvents((l) => [...l, emptyLever(defaultStart)])}>
+              <Plus /> Event
             </Button>
           </div>
-          {levers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Promos, holidays, closures, local or competitor events, demand shocks and price changes on date ranges.</p>
-          ) : null}
           <div className="flex flex-col gap-3">
-            {levers.map((l, i) => (
+            {events.map((l, i) => (
               <div key={i} className="rounded-md border p-3">
-                <div className="mb-2 grid grid-cols-[1fr_auto_auto] gap-2">
-                  <Input placeholder="Name, e.g. summer promo" value={l.name} onChange={(e) => update(i, { name: e.target.value })} />
-                  <Select value={l.kind} onChange={(e) => update(i, { kind: e.target.value as LeverKind })} className="w-32">
-                    {LEVER_KINDS.map((k) => <option key={k} value={k}>{k.replace("_", " ")}</option>)}
-                  </Select>
-                  <Button size="icon" variant="ghost" aria-label="Remove lever" onClick={() => setLevers((ls) => ls.filter((_, j) => j !== i))}>
+                <div className="mb-2 flex gap-2">
+                  <Input placeholder="Name" value={l.name} onChange={(e) => update(i, { name: e.target.value })} />
+                  <Button size="icon" variant="ghost" aria-label="Remove event" onClick={() => setEvents((ls) => ls.filter((_, j) => j !== i))}>
                     <Trash2 />
                   </Button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
+                  <Field label="Kind">
+                    <Select value={l.kind} onChange={(e) => update(i, { kind: e.target.value as LeverKind })}>
+                      {LEVER_KINDS.map((k) => <option key={k} value={k}>{k.replace("_", " ")}</option>)}
+                    </Select>
+                  </Field>
+                  <TriSelect label="Open" value={l.open} onChange={(v) => update(i, { open: v })} onLabel="open" offLabel="closed" />
                   <Field label="From"><Input type="date" value={l.start_date} onChange={(e) => update(i, { start_date: e.target.value })} /></Field>
                   <Field label="To"><Input type="date" value={l.end_date} onChange={(e) => update(i, { end_date: e.target.value })} /></Field>
-                  <TriField label="Promo" value={l.promo} onChange={(v) => update(i, { promo: v })} />
-                  <TriField label="Open" value={l.open} onChange={(v) => update(i, { open: v })} onLabel="open" offLabel="closed" />
-                  {features.has("SchoolHoliday") ? (
-                    <TriField label="School holiday" value={l.school_holiday} onChange={(v) => update(i, { school_holiday: v })} />
-                  ) : null}
-                  {[...features].some((f) => f.startsWith("StateHoliday")) ? (
-                    <Field label="State holiday">
-                      <Select value={l.state_holiday} onChange={(e) => update(i, { state_holiday: e.target.value })}>
-                        <option value="">unchanged</option>
-                        <option value="0">none</option>
-                        <option value="a">public (a)</option>
-                        <option value="b">Easter (b)</option>
-                        <option value="c">Christmas (c)</option>
-                      </Select>
-                    </Field>
-                  ) : null}
-                  <Field label="Demand change %" hint="e.g. -20 for a shock">
-                    <Input type="number" step="1" value={l.demand_pct} onChange={(e) => update(i, { demand_pct: e.target.value })} />
-                  </Field>
-                  <Field label="Price change %">
-                    <Input type="number" step="0.5" value={l.price_change_pct} onChange={(e) => update(i, { price_change_pct: e.target.value })} />
-                  </Field>
+                  {features.has("Promo") ? <TriSelect label="Promo" value={l.promo} onChange={(v) => update(i, { promo: v })} /> : null}
+                  {features.has("SchoolHoliday") ? <TriSelect label="School holiday" value={l.school_holiday} onChange={(v) => update(i, { school_holiday: v })} /> : null}
+                  <Field label="Demand %"><Input type="number" step="1" value={l.demand_pct} onChange={(e) => update(i, { demand_pct: e.target.value })} /></Field>
+                  <Field label="Price %"><Input type="number" step="0.5" value={l.price_change_pct} onChange={(e) => update(i, { price_change_pct: e.target.value })} /></Field>
                 </div>
               </div>
             ))}
           </div>
         </div>
-
-        <details className="rounded-md border p-3 text-sm">
-          <summary className="cursor-pointer font-medium">Store-level levers</summary>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            {features.has("st_promo2_active") ? (
-              <>
-                <TriField label="Promo2" value={promo2} onChange={setPromo2} />
-                <Field label="Promo2 months" hint="e.g. Jan,Apr,Jul,Oct">
-                  <Input value={promo2Interval} onChange={(e) => setPromo2Interval(e.target.value)} />
-                </Field>
-              </>
-            ) : null}
-            <Field label="COGS override %" hint="margin adjustment">
-              <Input type="number" step="0.5" value={cogs} onChange={(e) => setCogs(e.target.value)} />
-            </Field>
-            <Field label="Price elasticity" hint="e.g. -1.2; blank = volume unchanged">
-              <Input type="number" step="0.1" max={0} value={elasticity} onChange={(e) => setElasticity(e.target.value)} />
-            </Field>
-          </div>
-        </details>
-
-        <ErrorNotice error={error} />
-        <Button onClick={submit} disabled={pending || !storeId || !mid || !store?.has_financial_config}>
-          <Rocket /> {pending ? "Queuing…" : "Run Autopilot"}
-        </Button>
       </CardContent>
     </Card>
   );
 }
 
-function TriField({
-  label,
-  value,
-  onChange,
-  onLabel = "on",
-  offLabel = "off",
-}: {
-  label: string;
-  value: Tri;
-  onChange: (v: Tri) => void;
-  onLabel?: string;
-  offLabel?: string;
-}) {
+function TriSelect({ label, value, onChange, onLabel = "on", offLabel = "off" }: { label: string; value: Tri; onChange: (v: Tri) => void; onLabel?: string; offLabel?: string }) {
   return (
     <Field label={label}>
       <Select value={value} onChange={(e) => onChange(e.target.value as Tri)}>
@@ -373,19 +501,7 @@ function TriField({
   );
 }
 
-function RunList({
-  runs,
-  loading,
-  error,
-  active,
-  onSelect,
-}: {
-  runs: AutopilotRun[];
-  loading: boolean;
-  error: unknown;
-  active: string | null;
-  onSelect: (id: string) => void;
-}) {
+function RunList({ runs, loading, error, active, onSelect }: { runs: AutopilotRun[]; loading: boolean; error: unknown; active: string | null; onSelect: (id: string) => void }) {
   return (
     <Card>
       <CardHeader><CardTitle>Recent plans</CardTitle></CardHeader>
@@ -401,13 +517,13 @@ function RunList({
               <li key={r.id}>
                 <button
                   onClick={() => onSelect(r.id)}
-                  className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted ${active === r.id ? "bg-muted" : ""}`}
+                  className={cn("flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-muted", active === r.id && "bg-muted")}
                 >
-                  <span>
+                  <span className="min-w-0">
                     <span className="font-medium">{r.name ?? HORIZONS.find((h) => h.value === r.horizon)?.label}</span>
-                    <span className="block text-xs text-muted-foreground">
+                    <span className="block truncate text-xs text-muted-foreground">
                       {r.summary.window_start ? `${r.summary.window_start} → ${r.summary.window_end}` : formatDateTime(r.created_at)}
-                      {r.scenario.levers?.length ? ` · ${r.scenario.levers.length} lever(s)` : ""}
+                      {r.scenario.levers?.length || r.scenario.hourly_wage || r.scenario.cogs_pct ? " · scenario" : ""}
                     </span>
                   </span>
                   <JobProgress status={r.status} pct={r.progress_pct} stage={r.stage} />
@@ -421,8 +537,13 @@ function RunList({
   );
 }
 
-function RunDetail({ id }: { id: string }) {
+function RunDetail({ id, datasetId }: { id: string; datasetId?: string }) {
   const run = useAutopilotRun(id);
+  const health = useQuery({
+    queryKey: ["dataset-health", datasetId],
+    enabled: !!datasetId,
+    queryFn: () => api.get<{ report: HealthReport | null }>(`/datasets/${datasetId}/health`),
+  });
   if (run.isLoading) return <Skeleton className="h-[480px]" />;
   if (run.error) return <ErrorNotice error={run.error} />;
   const r = run.data;
@@ -438,214 +559,66 @@ function RunDetail({ id }: { id: string }) {
   if (r.status !== "succeeded" || !("kpis" in r.result)) {
     return (
       <Card>
-        <CardHeader><CardTitle>Planning…</CardTitle><CardDescription>{r.status_message ?? "Forecasting and building the plan."}</CardDescription></CardHeader>
+        <CardHeader><CardTitle>Planning…</CardTitle><CardDescription>{r.status_message ?? "Forecasting baseline and scenario, then building the plan."}</CardDescription></CardHeader>
         <CardContent><JobProgress status={r.status} pct={r.progress_pct} stage={r.stage} /></CardContent>
       </Card>
     );
   }
-  return <ResultView id={id} res={r.result as AutopilotResult} />;
-}
-
-function ResultView({ id, res }: { id: string; res: AutopilotResult }) {
-  const cur = res.currency;
-  const k = res.kpis;
-  const chartDays = useMemo(
-    () =>
-      res.days.map((d) => ({
-        ...d,
-        band: [d.revenue_p10, d.revenue_p90],
-        surge: d.surge_staff,
-      })),
-    [res.days],
-  );
-  const stem = `autopilot_${res.store_code}_${res.window.start}_${res.window.end}`;
-  const [downloadError, setDownloadError] = useState<unknown>(null);
-  const download = (path: string, ext: string) =>
-    api.download(`/autopilot/runs/${id}/${path}`, `${stem}.${ext}`).catch(setDownloadError);
-
+  const res = r.result as AutopilotResult;
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium">
-            Store {res.store_code} · {res.window.start} → {res.window.end} ({res.window.days} days, {k.open_days} open)
+            Store {res.store_code} · {res.window.start} → {res.window.end} ({res.window.days} days, {res.kpis.open_days} open)
           </p>
-          <p className="text-xs text-muted-foreground">Data through {res.window.history_end}{res.model.model_family ? ` · model ${res.model.model_family}` : ""}</p>
+          <p className="text-xs text-muted-foreground">
+            Data through {res.window.history_end}
+            {res.model.model_family ? ` · ${res.model.model_family}` : ""}
+            {res.model.metrics?.wape != null ? ` · validation accuracy ${formatPct(1 - (res.model.metrics.wape as number))}` : ""}
+          </p>
         </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => download("report.pdf", "pdf")}><FileText /> PDF report</Button>
-          <Button size="sm" variant="outline" onClick={() => download("plan.xlsx", "xlsx")}><FileSpreadsheet /> Excel</Button>
-          <Button size="sm" variant="outline" onClick={() => download("plan.csv", "csv")}><Download /> CSV</Button>
-        </div>
+        <ExportButtons runId={id} res={res} />
       </div>
-      <ErrorNotice error={downloadError} />
-      {res.cold_start ? (
-        <p className="rounded-md bg-warning/15 p-3 text-xs">{res.cold_start.note}</p>
-      ) : null}
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi label="Revenue (P50)" value={formatCurrency(k.revenue_p50, cur)} sub={`P10 ${formatCurrency(k.revenue_p10, cur)} · P90 ${formatCurrency(k.revenue_p90, cur)}`} />
-        <Kpi
-          label="Net profit (P50)"
-          value={formatCurrency(k.net_profit_p50, cur)}
-          sub={
-            res.scenario_impact
-              ? `${res.scenario_impact.net_profit_p50 >= 0 ? "+" : ""}${formatCurrency(res.scenario_impact.net_profit_p50, cur)} vs baseline`
-              : `margin ${formatPct(k.net_margin_pct)}`
-          }
-        />
-        <Kpi label="Footfall" value={formatNumber(k.footfall)} sub={`break-even ${formatCurrency(k.break_even_revenue, cur)} · safety ${formatPct(k.margin_of_safety_pct)}`} />
-        <Kpi label="Labour" value={formatCurrency(k.labor_cost, cur)} sub={`${formatNumber(k.labor_hours)} h · peak ${k.peak_staff_per_shift}/shift`} />
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Autopilot actions</CardTitle>
-          <CardDescription>Prioritized by severity, then money at stake.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {res.recommendations.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No actions needed for this window.</p>
-          ) : (
-            <ul className="flex flex-col divide-y">
-              {res.recommendations.map((rec, i) => (
-                <li key={i} className="flex gap-3 py-3">
-                  <Badge tone={PRIORITY_TONE[rec.priority]} className="h-fit shrink-0 uppercase">{rec.priority}</Badge>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">{rec.title}</p>
-                    <p className="text-sm text-muted-foreground">{rec.detail}</p>
-                  </div>
-                  {rec.impact !== null ? (
-                    <span className={`shrink-0 text-sm tabular-nums ${rec.impact < 0 ? "text-destructive" : "text-success"}`}>
-                      {formatCurrency(rec.impact, cur)}
-                    </span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Revenue forecast</CardTitle><CardDescription>P50 with the P10–P90 band, scenario baseline and daily break-even</CardDescription></CardHeader>
-        <CardContent><RevenuePlanChart data={chartDays} /></CardContent>
-      </Card>
-
+      <PlanKpis res={res} />
+      <AlertBanners res={res} health={health.data?.report} />
+      <RecommendationsFeed res={res} />
+      <RevenueCard res={res} />
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle>Daily net profit</CardTitle><CardDescription>P50 after COGS, labour and overhead</CardDescription></CardHeader>
-          <CardContent><SimpleBarChart data={chartDays} xKey="ds" series={[{ key: "net_profit_p50", label: "Net profit P50" }]} /></CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle>Headcount per shift</CardTitle><CardDescription>Plus peak-hour cover</CardDescription></CardHeader>
-          <CardContent>
-            <SimpleBarChart
-              data={chartDays}
-              xKey="ds"
-              stacked
-              series={[...res.shift_names.map((n) => ({ key: `staff_${n}`, label: n })), { key: "surge", label: "Peak cover", color: "var(--chart-3)" }]}
-            />
-          </CardContent>
-        </Card>
+        <ProfitCard res={res} />
+        <StaffingCard res={res} />
       </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle>P&L</CardTitle><CardDescription>{res.window.days} days</CardDescription></CardHeader>
-          <CardContent>
-            <Table>
-              <tbody>
-                {[
-                  ["Gross (list-price) revenue", res.totals.gross_revenue],
-                  ["Promo discount", -res.totals.promo_discount],
-                  ["Net revenue P50", res.totals.revenue_p50],
-                  ["COGS", -res.totals.cogs],
-                  ["Gross profit", res.totals.gross_profit],
-                  ["Labour", -res.totals.labor_cost],
-                  ["Fixed overhead", -res.totals.fixed_overhead],
-                  ["Net profit P50", res.totals.net_profit_p50],
-                ].map(([label, v]) => (
-                  <TR key={label as string}>
-                    <TD>{label}</TD>
-                    <TD className="text-right tabular-nums">{formatCurrency(v as number, cur)}</TD>
-                  </TR>
-                ))}
-                <TR>
-                  <TD className="text-muted-foreground">Net profit P10 / P90</TD>
-                  <TD className="text-right tabular-nums text-muted-foreground">
-                    {formatCurrency(res.totals.net_profit_p10, cur)} / {formatCurrency(res.totals.net_profit_p90, cur)}
-                  </TD>
-                </TR>
-              </tbody>
-            </Table>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle>Model comparison</CardTitle><CardDescription>Validation metrics of finished runs on this dataset</CardDescription></CardHeader>
-          <CardContent>
-            {res.model_comparison.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No other finished models.</p>
-            ) : (
-              <Table>
-                <THead><tr><TH>Model</TH><TH>Accuracy</TH><TH>RMSPE</TH><TH>RMSSE</TH></tr></THead>
-                <tbody>
-                  {res.model_comparison.slice(0, 8).map((m) => (
-                    <TR key={m.model_run_id} className={m.model_run_id === res.model.model_run_id ? "bg-muted" : ""}>
-                      <TD>{m.name ?? m.model_family}<span className="block text-xs text-muted-foreground">{m.model_family} · {m.horizon_days} d</span></TD>
-                      <TD>{formatPct(m.accuracy)}</TD>
-                      <TD>{formatNumber(m.rmspe, 4)}</TD>
-                      <TD>{formatNumber(m.rmsse, 4)}</TD>
-                    </TR>
-                  ))}
-                </tbody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader><CardTitle>Shift plan</CardTitle></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <Table>
-            <THead>
-              <tr>
-                <TH>Date</TH><TH>Revenue P50</TH><TH>Footfall</TH>
-                {res.shift_names.map((n) => <TH key={n}>{n}</TH>)}
-                <TH>Peak +</TH><TH>Hours</TH><TH>Net P50</TH><TH>Status</TH>
-              </tr>
-            </THead>
-            <tbody>
-              {res.days.map((d) => (
-                <TR key={d.ds} className={d.is_open ? "" : "text-muted-foreground"}>
-                  <TD className="whitespace-nowrap">{d.ds}{d.is_promo ? <Badge tone="info" className="ml-2">promo</Badge> : null}{d.event ? <span className="ml-2 text-xs">{d.event}</span> : null}</TD>
-                  <TD className="tabular-nums">{formatCurrency(d.revenue_p50, cur)}</TD>
-                  <TD className="tabular-nums">{formatNumber(d.footfall)}</TD>
-                  {res.shift_names.map((n) => <TD key={n} className="tabular-nums">{d[`staff_${n}`] ?? 0}</TD>)}
-                  <TD className="tabular-nums">{d.surge_staff}</TD>
-                  <TD className="tabular-nums">{formatNumber(d.labor_hours)}</TD>
-                  <TD className={`tabular-nums ${d.net_profit_p50 < 0 ? "text-destructive" : ""}`}>{formatCurrency(d.net_profit_p50, cur)}</TD>
-                  <TD>
-                    <Badge tone={d.staffing_status === "understaffed" ? "danger" : d.staffing_status === "overstaffed" ? "warning" : d.staffing_status === "closed" ? "neutral" : "success"}>
-                      {d.staffing_status}
-                    </Badge>
-                  </TD>
-                </TR>
-              ))}
-            </tbody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Assumptions</CardTitle></CardHeader>
-        <CardContent>
-          <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-            {res.assumptions.map((a) => <li key={a}>{a}</li>)}
-          </ul>
-        </CardContent>
-      </Card>
+      <PnlWaterfallCard res={res} />
+      <ShiftRoster res={res} />
+      <ModelComparison res={res} />
+      <AssumptionsCard items={res.assumptions} />
     </div>
+  );
+}
+
+function ModelComparison({ res }: { res: AutopilotResult }) {
+  if (!res.model_comparison.length) return null;
+  return (
+    <Card>
+      <CardHeader><CardTitle>Model comparison</CardTitle><CardDescription>Validation metrics of finished runs on this dataset; highlighted = used for this plan</CardDescription></CardHeader>
+      <CardContent className="overflow-x-auto">
+        <Table>
+          <THead><tr><TH>Model</TH><TH className="text-right">Horizon</TH><TH className="text-right">Accuracy</TH><TH className="text-right">WAPE</TH><TH className="text-right">RMSPE</TH><TH className="text-right">RMSSE</TH><TH className="text-right">R²</TH></tr></THead>
+          <tbody>
+            {res.model_comparison.slice(0, 10).map((m) => (
+              <TR key={m.model_run_id} className={m.model_run_id === res.model.model_run_id ? "bg-muted font-medium" : ""}>
+                <TD><Link className="hover:underline" href={`/model-lab/${m.model_run_id}`}>{m.name ?? m.model_family}</Link><span className="block text-xs text-muted-foreground">{m.model_family} · {m.run_type}</span></TD>
+                <TD className="text-right">{m.horizon_days} d</TD>
+                <TD className="text-right tabular-nums">{formatPct(m.accuracy, 2)}</TD>
+                <TD className="text-right tabular-nums">{formatNumber(m.wape, 4)}</TD>
+                <TD className="text-right tabular-nums">{formatNumber(m.rmspe, 4)}</TD>
+                <TD className="text-right tabular-nums">{formatNumber(m.rmsse, 4)}</TD>
+                <TD className="text-right tabular-nums">{formatNumber(m.r2, 3)}</TD>
+              </TR>
+            ))}
+          </tbody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }

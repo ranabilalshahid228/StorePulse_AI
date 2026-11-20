@@ -8,7 +8,7 @@ import type { ModelRunDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Skeleton, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
 import { ErrorNotice, JobProgress, Kpi, PageHeader } from "@/components/shared";
-import { TimeSeriesChart } from "@/components/charts";
+import { EpochCurves, NeuralDiagnostics } from "@/components/diagnostics";
 import { formatNumber, formatPct } from "@/lib/utils";
 
 export default function RunPage({ params }: { params: Promise<{ runId: string }> }) {
@@ -28,14 +28,8 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
   if (run.error) return <ErrorNotice error={run.error} />;
   if (!r) return <Skeleton className="h-64" />;
 
-  // Logs may interleave several models (quantile boosters, ensemble members): plot the first one.
-  const tag = (l: Record<string, unknown>) => String(l.member ?? l.model ?? "");
-  const firstTag = r.epoch_logs.length ? tag(r.epoch_logs[0]!) : "";
-  const curve = r.epoch_logs.filter((l) => tag(l) === firstTag);
-  const curveKeys = curve.length
-    ? Object.keys(curve[0]!).filter((k) => !["epoch", "seconds"].includes(k) && typeof curve[0]![k] === "number").slice(0, 3)
-    : [];
   const m = r.metrics as Record<string, number | undefined>;
+  const fit = typeof r.metrics.fit_seconds === "number" ? r.metrics.fit_seconds : null;
   const interval = r.metrics.interval;
   const ensemble = r.metrics.ensemble;
 
@@ -47,13 +41,16 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
         actions={<JobProgress status={r.status} pct={r.progress_pct} stage={r.stage} />}
       />
       {r.error ? <div className="mb-6"><ErrorNotice error={new Error(r.error)} /></div> : null}
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <Kpi label="Accuracy" value={formatPct(m.wape !== undefined ? 1 - m.wape : null, 2)} sub="1 − WAPE on validation" />
         <Kpi label="WAPE" value={formatPct(m.wape, 2)} />
+        <Kpi label="RMSPE" value={formatNumber(m.rmspe, 4)} sub="Rossmann metric" />
         <Kpi label="RMSSE" value={formatNumber(m.rmsse, 3)} sub="vs. naive, per series" />
         <Kpi label="RMSE" value={formatNumber(m.rmse, 1)} />
         <Kpi label="MAE" value={formatNumber(m.mae, 1)} />
         <Kpi label="R²" value={formatNumber(m.r2, 3)} />
         <Kpi label="Bias" value={formatPct(m.bias_pct, 2)} />
+        <Kpi label="Training time" value={fit !== null ? (fit < 90 ? `${fit.toFixed(0)} s` : `${(fit / 60).toFixed(1)} min`) : "—"} sub={`${r.device ?? "cpu"} · ${formatNumber(r.train_rows ?? null)} rows`} />
         <Kpi label="Inference" value={r.inference_ms ? `${r.inference_ms.toFixed(1)} ms` : "—"} sub="per 1,000 rows" />
       </div>
 
@@ -140,16 +137,7 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
       ) : null}
 
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle>Learning curve</CardTitle></CardHeader>
-          <CardContent>
-            {curveKeys.length ? (
-              <TimeSeriesChart data={r.epoch_logs.map((l) => ({ ...l, ds: l.epoch }))} series={curveKeys.map((k) => ({ key: k, label: k }))} />
-            ) : (
-              <p className="text-sm text-muted-foreground">No epoch logs yet.</p>
-            )}
-          </CardContent>
-        </Card>
+        <EpochCurves logs={r.epoch_logs} />
         <Card>
           <CardHeader><CardTitle>Hyperparameters</CardTitle></CardHeader>
           <CardContent>
@@ -157,6 +145,8 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
           </CardContent>
         </Card>
       </div>
+
+      <NeuralDiagnostics run={r} />
 
       {r.plot_paths.length ? (
         <div className="mb-6 grid gap-6 lg:grid-cols-2">

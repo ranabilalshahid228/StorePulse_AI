@@ -234,6 +234,18 @@ async def series(
     return {"store_code": store_code, "item_id": item_id, "points": _jsonable(df)}
 
 
+@router.get("/{dataset_id}/eda")
+async def eda(dataset_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession) -> dict[str, Any]:
+    """Seasonality (month / weekday), promo & holiday lift, sales trend and store comparison."""
+    from app.services.eda import compute_eda
+
+    ds = await get_owned(db, Dataset, dataset_id, principal.organization_id)
+    path = await run_in_threadpool(get_storage().local_path, _require_ready(ds))
+    stores = (await db.execute(scoped(Store, principal.organization_id))).scalars().all()
+    meta = {s.code: {"store_type": s.store_type, "assortment": s.assortment} for s in stores if s.store_type}
+    return await run_in_threadpool(compute_eda, path, dict(ds.schema_mapping or {}), meta)
+
+
 @router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_dataset(dataset_id: uuid.UUID, principal: AdminPrincipal, db: DbSession) -> Response:
     ds = await get_owned(db, Dataset, dataset_id, principal.organization_id)

@@ -159,6 +159,10 @@ export interface ModelRun {
     r2?: number | null;
     interval?: IntervalMetrics;
     ensemble?: EnsembleComparison;
+    fit_seconds?: number;
+    feature_importance?: Record<string, number>;
+    residuals?: ResidualDiagnostics;
+    tuning?: { scheme: string; inner_validation_days: number; inner_best_value: number };
   };
   inference_ms: number | null;
   device: string | null;
@@ -168,6 +172,8 @@ export interface ModelRun {
   status_message: string | null;
   error: string | null;
   plot_paths: string[];
+  train_rows?: number | null;
+  started_at?: string | null;
   created_at: string;
   finished_at: string | null;
 }
@@ -326,6 +332,7 @@ export interface AutopilotScenario {
   price_elasticity?: number | null;
   cogs_pct?: number | null;
   promo_discount_pct?: number | null;
+  hourly_wage?: number | null;
 }
 
 export interface AutopilotRequest {
@@ -425,7 +432,13 @@ export interface AutopilotKpis {
   break_even_revenue: number | null;
   margin_of_safety_pct: number | null;
   footfall: number;
+  footfall_p10?: number;
+  footfall_p90?: number;
+  demand_p10?: number;
+  demand_p50?: number;
+  demand_p90?: number;
   labor_hours: number;
+  avg_staff_per_open_day?: number;
   labor_cost: number;
   peak_staff_per_shift: number;
   understaffed_shifts: number;
@@ -491,4 +504,44 @@ export interface AutopilotRun {
 
 export interface AutopilotRunDetail extends AutopilotRun {
   result: AutopilotResult | Record<string, never>;
+}
+
+export interface ResidualSlice {
+  wape: number | null;
+  bias_pct: number | null;
+  n: number;
+}
+
+export interface ResidualDiagnostics {
+  by_weekday: (ResidualSlice & { dow: string })[];
+  by_week_ahead: (ResidualSlice & { week: number })[];
+  pct_error_quantiles: Record<string, number>;
+}
+
+/* ---- EDA (mirrors app/services/eda.py) ----------------------------------------------------- */
+
+export interface EdaStoreRow {
+  store_code: string;
+  store_type: string | null;
+  assortment: string | null;
+  mean: number | null;
+  total: number | null;
+  open_days: number | null;
+  basket?: number | null;
+  footfall?: number | null;
+  promo_lift?: number | null;
+}
+
+export interface DatasetEda {
+  store_count: number;
+  open_day_mean: number | null;
+  columns: { promo: string | null; open: string | null; school: string | null; state: string | null };
+  monthly: { month: string; mean: number | null; index: number | null }[];
+  weekday: { dow: string; mean: number | null; open_share: number | null; promo?: number | null; no_promo?: number | null; promo_lift?: number | null }[];
+  trend: { ds: string; y: number | null }[];
+  yearly: { year: number; y: number | null }[];
+  promo: { promo_mean: number | null; no_promo_mean: number | null; lift: number | null; promo_day_share: number | null; footfall_lift?: number | null; basket_lift?: number | null } | null;
+  holidays: { holiday: string; days: number; mean: number | null; lift: number | null; open_share?: number | null }[];
+  stores: { top: EdaStoreRow[]; bottom: EdaStoreRow[]; distribution: Record<string, number | null> };
+  segments: { segment: string; stores: number; mean: number | null; basket: number | null; promo_lift: number | null }[];
 }

@@ -46,7 +46,10 @@ Organization ─┬─ User (owner | admin | analyst | viewer)
         │                        /model-lab/[id], /autopilot, /pnl-workforce, /reports, /stores
         ├── app/login/        ← sign in / create workspace
         ├── components/ui/    ← shadcn-style primitives (button, card, badge, input, select, table, progress)
-        ├── components/       ← app-sidebar, shared (PageHeader, JobProgress, Kpi…), charts (Recharts)
+        ├── components/       ← app-sidebar, shared (PageHeader, JobProgress, Kpi…), charts (Recharts:
+        │                        band, waterfall, horizontal bars), autopilot (KPI ranges, alerts, actions,
+        │                        P&L bridge, roster, exports), eda (EDA studio), diagnostics (curves,
+        │                        residuals, feature importance), forecast-pnl (forecast-run P&L tab)
         ├── hooks/queries.ts  ← TanStack Query hooks; poll every 2 s while a job is active
         └── lib/              ← api.ts (fetch + JWT refresh + error envelope), types.ts (mirrors schemas)
 ```
@@ -138,6 +141,8 @@ alembic downgrade -1
 1. `POST /auth/register` → tokens. 2. `POST /stores/import` with Rossmann `store.csv` (optional metadata).
 3. `POST /datasets` (multipart `file`, `name`) → profile + `suggested_mapping`.
 4. `PUT /datasets/{id}/mapping` → enqueues ingestion; poll `GET /datasets/{id}` or SSE `/datasets/{id}/events`.
+   `GET /datasets/{id}/eda` (`services/eda.py`): month/weekday seasonality, promo & holiday lift, monthly
+   trend, store comparison and store-type × assortment segments (open days only when Open is mapped).
 5. `PUT /stores/{id}/financial-config`.
 6. `POST /model-runs/train` or `/model-runs/tune`; `GET /model-runs/leaderboard?dataset_id=…`.
 7. `POST /forecasts` or `/forecasts/event`; then `/forecasts/{id}/pnl|workforce?store_id=…`.
@@ -226,7 +231,7 @@ headline KPIs in `summary`, and exports render from `result` (`services/autopilo
   `school_holiday`, `state_holiday`, raw `covariates` re-forecast through the model (categoricals like
   Rossmann StateHoliday are overridable); `demand_pct` (uplift/shock, local/competitor events) and
   `price_change_pct` (+ optional `price_elasticity`) adjust afterwards. Store-level: `promo2` toggle
-  (needs a model trained with store features), `cogs_pct` / `promo_discount_pct` margin overrides,
+  (needs a model trained with store features), `cogs_pct` / `promo_discount_pct` margin and `hourly_wage` cost overrides,
   `covariate_defaults` = business-as-usual calendar (e.g. `{"Promo": 0}`; otherwise future flags repeat
   the last observed same-weekday value - Rossmann's data ends in a promo week). Any scenario also runs a
   baseline plan; `scenario_impact` and promo-profitability actions diff the two.
@@ -302,6 +307,8 @@ headline KPIs in `summary`, and exports render from `result` (`services/autopilo
 - Validation = last `validation_days` (default = horizon). Metrics (`ml/metrics.py`): MAE, RMSE, WAPE,
   RMSSE (M5 definition: per-series RMSE scaled by the training-period one-step naive error, averaged
   over series), R², MAPE, sMAPE, RMSPE (Rossmann), bias. Tune on any of wape/rmse/mae/rmspe/rmsse.
+  Runs also store `fit_seconds`, top-25 `feature_importance` and `residuals` (`residual_diagnostics`:
+  WAPE/bias by weekday and by week ahead, percentage-error quantiles) for the Model Lab diagnostics.
 - Intervals: quantile models give P10/P50/P90 directly (pinball loss + coverage reported); otherwise an
   empirical P10–P90 band from relative validation residuals (in-sample coverage, plus
   `coverage_holdout`: calibrated on the first half of validation, measured on the second; pinball
