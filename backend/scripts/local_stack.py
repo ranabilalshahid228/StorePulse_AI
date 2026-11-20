@@ -127,7 +127,8 @@ def db_start() -> None:
     LOGS.mkdir(parents=True, exist_ok=True)
     if not db_running():
         print(f"[db] starting PostgreSQL on 127.0.0.1:{PG_PORT}")
-        r = _run(
+        # No captured pipes: the postmaster inherits them on Windows and run() would wait forever.
+        rc = subprocess.run(
             [
                 pg_bin("pg_ctl"),
                 "-D",
@@ -140,9 +141,12 @@ def db_start() -> None:
                 "start",
             ],
             env=lean_env(),
-        )
-        if r.returncode:
-            raise SystemExit(r.stdout + r.stderr + f"\nsee {LOGS / 'postgres.log'}")
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        if rc:
+            raise SystemExit(f"PostgreSQL failed to start - see {LOGS / 'postgres.log'}")
     if psql(f"SELECT 1 FROM pg_roles WHERE rolname='{DB['user']}'") != "1":
         psql(f"CREATE ROLE {DB['user']} LOGIN PASSWORD '{DB['password']}'")
     if psql(f"SELECT 1 FROM pg_database WHERE datname='{DB['name']}'") != "1":
@@ -302,6 +306,8 @@ def clean(all_: bool) -> None:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)  # progress visible when output is redirected
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     u = sub.add_parser("up", help="start db, migrate, run api + worker + ui")

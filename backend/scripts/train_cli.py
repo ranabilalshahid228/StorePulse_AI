@@ -432,18 +432,35 @@ def _load(model_dir: Path) -> tuple[ForecastModel, dict[str, Any]]:
     return ForecastModel.load(model_dir / cfg["checkpoint"]), cfg
 
 
-def _ensure_canonical(cfg: dict[str, Any], model_dir: Path) -> None:
-    """Checkpoints copied to another machine: rebuild the canonical Parquet if the cached one is gone."""
+def _ensure_canonical(cfg: dict[str, Any], model_dir: Path, data_dir: str | None = None) -> None:
+    """Checkpoints copied to another machine: rebuild the canonical Parquet if the cached one is gone.
+    Preset datasets (rossmann, m5) are re-resolved under --data-dir when the recorded raw path (e.g. on the
+    GPU host) doesn't exist here; custom datasets need their files at the recorded paths."""
     if Path(cfg["canonical"]).exists():
         return
+    ds = cfg["dataset"]
+    if not Path(ds["raw"]).exists():
+        if ds["name"] not in PRESETS:
+            raise SystemExit(
+                f"data file {ds['raw']} not found on this machine (custom dataset: copy it there)"
+            )
+        stores = (ds.get("mapping") or {}).get("store_filter")
+        fresh = PRESETS[ds["name"]](stores, Path(data_dir).resolve() if data_dir else DATA)
+        ds = ds | {
+            "raw": str(fresh["raw"]),
+            "mapping": fresh["mapping"].model_dump(mode="json"),
+            "aux": {str(k): str(v) for k, v in fresh["aux"].items()},
+        }
+        cfg["dataset"] = ds
+        print(f"[data] recorded data path not found here; using {ds['raw']}")
     cache = model_dir.parent.parent / "_cache"
-    cfg["canonical"] = str(canonical(cfg["dataset"], cache, ConsoleProgress()))
+    cfg["canonical"] = str(canonical(ds, cache, ConsoleProgress()))
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
     model_dir = Path(args.model_dir).resolve()
     model, cfg = _load(model_dir)
-    _ensure_canonical(cfg, model_dir)
+    _ensure_canonical(cfg, model_dir, args.data_dir)
     data = prepare_data(
         Path(cfg["canonical"]),
         cfg["dataset"]["mapping"],
@@ -467,7 +484,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def cmd_predict(args: argparse.Namespace) -> int:
     model_dir = Path(args.model_dir).resolve()
     model, cfg = _load(model_dir)
-    _ensure_canonical(cfg, model_dir)
+    _ensure_canonical(cfg, model_dir, args.data_dir)
     horizon = args.horizon or cfg["horizon"]
     if args.covariate_default:
         cfg["covariate_defaults"] = parse_kv(args.covariate_default)
@@ -539,10 +556,12 @@ def main() -> int:
 
     e = sub.add_parser("evaluate", help="re-score a checkpoint on its validation window")
     e.add_argument("--model-dir", required=True, help="outputs/<run>/<family>")
+    e.add_argument("--data-dir", help="local data folder if the run was trained elsewhere (default data/raw)")
     e.set_defaults(fn=cmd_evaluate)
 
     p = sub.add_parser("predict", help="forecast the days after the data with a checkpoint")
     p.add_argument("--model-dir", required=True)
+    p.add_argument("--data-dir", help="local data folder if the run was trained elsewhere (default data/raw)")
     p.add_argument("--horizon", type=int, help="<= the model's trained horizon")
     p.add_argument("--covariate-default", action="append", default=[], metavar="COL=VALUE")
     p.add_argument("--format", default="parquet", choices=["parquet", "csv"])
