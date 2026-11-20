@@ -192,6 +192,23 @@ default params **91.52 %** (WAPE 0.0848, RMSPE 0.1245, R² 0.954); 25-trial tuni
 (WAPE 0.0823). Tried and rejected: log1p target (91.36 %), L1 objective (91.29 %), shorter horizons
 (14 d: 90.54 % on the same window). M5 CA_1 item-level is a different problem (WAPE ≈ 0.73).
 
+Neural nets and ensemble (same data, last 42 days held out for every horizon, CPU, `--torch-epochs 20`):
+
+| Model / variant | 14 d | 28 d | 42 d | Notes (42 d) |
+|---|---|---|---|---|
+| LightGBM (default) | 90.54 % | 91.61 % | 91.52 % | ~1 min |
+| `torch_mlp` (log1p target) | **91.77 %** | 91.11 % | 91.35 % | 5 min, RMSPE 0.1255 |
+| `torch_mlp` `target_transform=standard` | | | 91.46 % | |
+| `torch_mlp` quantile heads | | | 91.40 % | learned band covers 78.6 % |
+| `torch_mlp` `feature_log=false` | | | 90.94 % | log-compressing inputs matters |
+| `torch_mlp` 6-trial honest tuning | | | 91.17 % | inner 92.07 % did not carry over |
+| `torch_gru` | 91.57 % | 91.30 % | 91.37 % | 52 min, RMSPE 0.1215 |
+| `ensemble` (LightGBM + GRU, 0.45/0.55) | | | **91.84 %** | RMSPE 0.1186, RMSSE 0.158 |
+
+The ensemble's weights are fitted on the first half of the validation window; on the untouched second half
+the fitted blend scores WAPE 0.0779 vs LightGBM 0.0801 and GRU 0.0840. Empirical P10–P90 bands hold
+78–85 % coverage out-of-sample (`coverage_holdout`).
+
 ## Background jobs & progress
 
 - Queues: `ingestion` (upload → Parquet + diagnostics), `training` (train + Optuna), `forecasting`.
