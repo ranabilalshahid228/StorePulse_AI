@@ -282,7 +282,8 @@ export function PnlWaterfallCard({ res }: { res: AutopilotResult }) {
             ]}
           />
         </div>
-        <Table className="lg:col-span-2">
+        <div className="min-w-0 lg:col-span-2">
+        <Table>
           <tbody>
             {(
               [
@@ -311,6 +312,7 @@ export function PnlWaterfallCard({ res }: { res: AutopilotResult }) {
             </TR>
           </tbody>
         </Table>
+        </div>
       </CardContent>
     </Card>
   );

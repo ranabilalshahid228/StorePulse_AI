@@ -12,6 +12,15 @@ os.environ.setdefault("ENVIRONMENT", "test")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROSSMANN_TRAIN = REPO_ROOT / "data" / "raw" / "rossman dataset" / "train.csv"
+LOCAL_DIR = REPO_ROOT / ".local"
+# Keep test caches on the repo drive (git-ignored .local/) instead of the user profile.
+os.environ.setdefault("MPLCONFIGDIR", str(LOCAL_DIR / "mpl"))
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """tmp_path / tmp_path_factory under .local/pytest unless --basetemp is given (cleared every run)."""
+    if not config.option.basetemp:
+        config.option.basetemp = str(LOCAL_DIR / "pytest")
 
 
 class RecordingProgress:

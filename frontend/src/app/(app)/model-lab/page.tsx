@@ -80,6 +80,7 @@ function LaunchForm({ datasetId }: { datasetId: string }) {
   const stores = useStores();
   const families = useQuery({ queryKey: ["families"], queryFn: () => api.get<ModelFamilyInfo[]>("/model-families") });
   const [tune, setTune] = useState(false);
+  const [family, setFamily] = useState("lightgbm");
   const submit = useMutation({
     mutationFn: (body: object) => api.post(`/model-runs/${tune ? "tune" : "train"}`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["model-runs"] }),
@@ -117,7 +118,7 @@ function LaunchForm({ datasetId }: { datasetId: string }) {
         <form className="flex flex-col gap-4" onSubmit={onSubmit}>
           <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
             <Field label="Model family">
-              <Select name="family" defaultValue="lightgbm">
+              <Select name="family" value={family} onChange={(e) => setFamily(e.target.value)}>
                 {families.data?.map((f) => (
                   <option key={f.family} value={f.family} disabled={!f.available}>
                     {f.family}{f.supports_gpu ? " (GPU)" : ""}{f.available ? "" : " — not installed"}

@@ -37,3 +37,14 @@ optuna*.db
 data/**/*.csv
 data/**/*.zip
 *.feather
+
+# Lean local stack (scripts/local_stack.py): db, uploads, queue, logs, caches
+.local/
+
+# Standalone training outputs (scripts/train_cli.py) - copy back, never commit
+outputs/
+backend/outputs/
+
+# GPU host environment (backend/scripts/gpu/setup_env.sh)
+.venv-gpu/
+.pip-cache/

@@ -12,8 +12,23 @@ const pollWhileActive =
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => api.get<Me>("/auth/me") });
 
+/** All stores (the API pages at 500; Rossmann alone has 1,115), sorted by numeric-aware code. */
 export const useStores = () =>
-  useQuery({ queryKey: ["stores"], queryFn: () => api.get<Page<Store>>("/stores?limit=500") });
+  useQuery({
+    queryKey: ["stores"],
+    queryFn: async (): Promise<Page<Store>> => {
+      const items: Store[] = [];
+      let total = 0;
+      do {
+        const page = await api.get<Page<Store>>(`/stores?limit=500&offset=${items.length}`);
+        items.push(...page.items);
+        total = page.total;
+        if (!page.items.length) break;
+      } while (items.length < total);
+      items.sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      return { items, total, limit: items.length, offset: 0 };
+    },
+  });
 
 export const useDatasets = () =>
   useQuery({

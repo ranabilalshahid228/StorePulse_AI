@@ -20,8 +20,8 @@ export function EpochCurves({ logs }: { logs: Record<string, unknown>[] }) {
     [logs, current],
   );
   const keys = curve.length ? Object.keys(curve[0]!).filter((k) => !SKIP.has(k) && k !== "ds" && typeof curve[0]![k] === "number") : [];
-  const lossKeys = keys.filter((k) => /loss|l2|l1|tweedie|poisson|quantile|rmse|mae/i.test(k) && !k.startsWith("val_wape"));
-  const valKeys = keys.filter((k) => !lossKeys.includes(k));
+  // One small chart per metric: scales differ by orders of magnitude (e.g. LightGBM l2 vs l1).
+  const shown = keys.slice(0, 6);
   const secs = curve.map((c) => Number(c.seconds)).filter((v) => Number.isFinite(v));
 
   return (
@@ -45,10 +45,14 @@ export function EpochCurves({ logs }: { logs: Record<string, unknown>[] }) {
           <p className="text-sm text-muted-foreground">Curves appear while the model trains.</p>
         ) : (
           <>
-            {lossKeys.length ? <TimeSeriesChart data={curve} series={lossKeys.map((k) => ({ key: k, label: k }))} height={200} /> : null}
-            {valKeys.length ? (
-              <TimeSeriesChart data={curve} series={valKeys.map((k, i) => ({ key: k, label: k, color: `var(--chart-${((i + 2) % 5) + 1})` }))} height={200} />
-            ) : null}
+            <div className="grid gap-4 sm:grid-cols-2">
+              {shown.map((k, i) => (
+                <div key={k}>
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">{k}</p>
+                  <TimeSeriesChart data={curve} series={[{ key: k, label: k, color: `var(--chart-${(i % 5) + 1})` }]} height={150} />
+                </div>
+              ))}
+            </div>
           </>
         )}
       </CardContent>

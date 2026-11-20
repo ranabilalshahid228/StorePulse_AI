@@ -26,15 +26,26 @@ async def ready() -> JSONResponse:
         checks["database"] = "ok"
     except Exception as exc:  # noqa: BLE001
         checks["database"] = f"error: {type(exc).__name__}"
+    broker = get_settings().broker_url
     try:
-        import redis.asyncio as aioredis
+        if broker.startswith("redis"):
+            import redis.asyncio as aioredis
 
-        r = aioredis.from_url(get_settings().redis_url)
-        await r.ping()
-        await r.aclose()
-        checks["redis"] = "ok"
+            r = aioredis.from_url(broker)
+            await r.ping()
+            await r.aclose()
+        else:  # e.g. the Postgres (SQLAlchemy) broker used for lean local runs
+            from kombu import Connection
+            from starlette.concurrency import run_in_threadpool
+
+            def _check() -> None:
+                with Connection(broker) as conn:
+                    conn.ensure_connection(max_retries=1)
+
+            await run_in_threadpool(_check)
+        checks["broker"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        checks["redis"] = f"error: {type(exc).__name__}"
+        checks["broker"] = f"error: {type(exc).__name__}"
     ok = all(v == "ok" for v in checks.values())
     return JSONResponse(
         {"status": "ok" if ok else "degraded", "checks": checks}, status_code=200 if ok else 503

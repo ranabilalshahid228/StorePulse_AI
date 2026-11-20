@@ -81,6 +81,7 @@ Full list with defaults in `.env.example`; source of truth is `backend/app/core/
 | `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_MINUTES` | 60 / 10080 | |
 | `POSTGRES_HOST/PORT/USER/PASSWORD/DB` | localhost/5432/storepulse… | API uses asyncpg, workers & Alembic use psycopg 3 |
 | `REDIS_URL` | redis://localhost:6379/0 | broker + result backend unless `CELERY_*` set |
+| `CELERY_BROKER_URL` | = `REDIS_URL` | `sqla+postgresql+psycopg://…` = Postgres as broker (lean local stack) |
 | `CELERY_TASK_ALWAYS_EAGER` | false | run tasks inline (debugging only) |
 | `STORAGE_BACKEND` | local | `local` or `s3` |
 | `STORAGE_LOCAL_ROOT`, `STORAGE_CACHE_DIR` | ./storage, ./storage/.cache | |
@@ -95,7 +96,19 @@ Full list with defaults in `.env.example`; source of truth is `backend/app/core/
 
 ## Local development
 
-Prereqs: Python 3.11+, Node 22, Docker (for Postgres/Redis or the full stack).
+**Lean (no Docker, no Redis) — the default on the dev laptop.** Details in `docs/LOCAL_DEV.md`:
+```powershell
+cd backend
+.venv\Scripts\python -m pip install -e ".[dev,local]"   # local = pgserver (PostgreSQL 16 binaries in the venv)
+.venv\Scripts\python -m scripts.local_stack up          # db + migrations + api + worker + ui, all data in .local/
+.venv\Scripts\python -m scripts.smoke_local             # end-to-end check against the running stack
+```
+`local_stack` runs PostgreSQL on 127.0.0.1:55432 (data in `.local/pgdata`), uses it as the Celery broker
+(`CELERY_BROKER_URL=sqla+postgresql+psycopg://…`, kombu SQLAlchemy transport; results disabled because job
+state lives in Postgres), and points storage, temp files and pip/npm/matplotlib caches at `.local/`.
+Alembic ignores the broker's `kombu_*` tables. The Redis/Docker setup below remains the production path.
+
+Prereqs for Docker: Python 3.11+, Node 22, Docker (for Postgres/Redis or the full stack).
 
 Full stack in Docker:
 ```powershell
@@ -339,6 +352,15 @@ headline KPIs in `summary`, and exports render from `result` (`services/autopilo
   observed same-weekday value. Id categoricals carry forward before joins run.
 
 ## GPU training workflow
+
+**Standalone (university GPU, no Docker/servers):** `backend/scripts/train_cli.py` — `train` (ingest →
+features → train/tune → checkpoint → validation + forecast), `evaluate`, `predict`, `list`; run folders in
+git-ignored `outputs/<run>/` (`run.json`, `leaderboard.csv`, `<family>/model.*`, `config.json`,
+`metrics.json`, `validation.parquet`, `forecast.parquet`). Host setup `backend/scripts/gpu/setup_env.sh`,
+SLURM `train.sbatch`, tmux/nohup `run_detached.sh`; `scripts/import_model.py` registers a checkpoint as a
+finished model run of a local dataset (Model Lab / Autopilot). Guide: `docs/GPU_TRAINING.md`.
+
+**Docker GPU worker:**
 
 1. Host: NVIDIA driver + NVIDIA Container Toolkit (`docker run --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`).
 2. `docker compose --profile gpu up --build` starts `celery-worker-gpu` (Dockerfile.gpu, CUDA 12.4 torch wheel,

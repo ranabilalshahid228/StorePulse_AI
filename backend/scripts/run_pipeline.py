@@ -86,7 +86,12 @@ TORCH_TUNE_SPACE = {
 
 
 def tune_family(
-    family: ModelFamily, data: PreparedData, base: dict[str, Any], n_trials: int, days: int
+    family: ModelFamily,
+    data: PreparedData,
+    base: dict[str, Any],
+    n_trials: int,
+    days: int,
+    device: str = "cpu",
 ) -> dict[str, Any]:
     """Optuna on an inner split of the training period; the final model gets a fixed budget (GBDT
     rounds scaled to the full training set, NN epochs) and no early stopping on the final window."""
@@ -107,7 +112,7 @@ def tune_family(
     def objective(trial: optuna.Trial) -> float:
         params = {**base, **suggest_params(trial, space), **fixed}
         t0 = time.perf_counter()
-        model, _, preds = _fit_once(family, inner, params, "cpu", None)
+        model, _, preds = _fit_once(family, inner, params, device, None)
         budget[trial.number] = int(model.params["best_iteration" if is_gbdt else "best_epoch"])
         wape = inner.metrics(preds)["wape"]
         print(
@@ -147,8 +152,37 @@ def parse_kv(items: list[str]) -> dict[str, Any]:
 # ----------------------------------------------------------------------------------------
 
 
-def rossmann(stores: list[str] | None) -> dict[str, Any]:
-    root = DATA / "rossman dataset"
+STORE_CSV_RENAME = {
+    "StoreType": "store_type",
+    "Assortment": "assortment",
+    "CompetitionDistance": "competition_distance",
+    "CompetitionOpenSinceMonth": "competition_open_since_month",
+    "CompetitionOpenSinceYear": "competition_open_since_year",
+    "Promo2": "promo2",
+    "Promo2SinceWeek": "promo2_since_week",
+    "Promo2SinceYear": "promo2_since_year",
+    "PromoInterval": "promo_interval",
+}
+
+
+def load_store_static(path: Path) -> dict[str, dict[str, Any]]:
+    """Store metadata CSV (Rossmann store.csv columns or Store field names) -> {code: attributes}."""
+    meta = pd.read_csv(path, dtype={"Store": str, "code": str}).rename(columns=STORE_CSV_RENAME)
+    meta = meta.rename(columns={"Store": "code"}).set_index("code")
+    if "promo2" in meta:
+        meta["promo2"] = meta["promo2"].fillna(0).astype(bool)
+    return {str(k): {f: (None if pd.isna(v) else v) for f, v in row.items()} for k, row in meta.iterrows()}
+
+
+def _first_dir(data_dir: Path, *names: str) -> Path:
+    for n in names:
+        if (data_dir / n).is_dir():
+            return data_dir / n
+    raise SystemExit(f"none of {names} found under {data_dir} (pass --data-dir)")
+
+
+def rossmann(stores: list[str] | None, data_dir: Path = DATA) -> dict[str, Any]:
+    root = _first_dir(data_dir, "rossman dataset", "rossmann", "rossmann-store-sales")
     mapping = SchemaMapping(
         date_column="Date",
         target_column="Sales",
@@ -160,26 +194,12 @@ def rossmann(stores: list[str] | None) -> dict[str, Any]:
         open_column="Open",
         store_filter=stores,
     )
-    meta = pd.read_csv(root / "store.csv", dtype={"Store": str})
-    rename = {
-        "StoreType": "store_type",
-        "Assortment": "assortment",
-        "CompetitionDistance": "competition_distance",
-        "CompetitionOpenSinceMonth": "competition_open_since_month",
-        "CompetitionOpenSinceYear": "competition_open_since_year",
-        "Promo2": "promo2",
-        "Promo2SinceWeek": "promo2_since_week",
-        "Promo2SinceYear": "promo2_since_year",
-        "PromoInterval": "promo_interval",
-    }
-    meta = meta.rename(columns=rename).set_index("Store")
-    meta["promo2"] = meta["promo2"].astype(bool)
-    static = {k: {f: (None if pd.isna(v) else v) for f, v in row.items()} for k, row in meta.iterrows()}
+    static = load_store_static(root / "store.csv") if (root / "store.csv").exists() else {}
     return {"raw": root / "train.csv", "mapping": mapping, "aux": {}, "store_static": static, "horizon": 42}
 
 
-def m5(stores: list[str] | None) -> dict[str, Any]:
-    root = DATA / "m5"
+def m5(stores: list[str] | None, data_dir: Path = DATA) -> dict[str, Any]:
+    root = _first_dir(data_dir, "m5", "m5-forecasting-accuracy")
     cal_id, price_id = uuid.uuid4(), uuid.uuid4()
     mapping = SchemaMapping(
         layout="wide",

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
 
     # --- Redis / Celery --------------------------------------------------------------------
     redis_url: str = "redis://localhost:6379/0"
+    # Broker override, e.g. sqla+postgresql+psycopg://user:pw@host:port/db to use PostgreSQL as the
+    # broker (kombu SQLAlchemy transport): no Redis - for lean local runs (scripts/local_stack.py).
     celery_broker_url: str | None = None
     celery_result_backend: str | None = None
     celery_task_always_eager: bool = False
@@ -84,8 +86,12 @@ class Settings(BaseSettings):
         return self.celery_broker_url or self.redis_url
 
     @property
-    def result_backend(self) -> str:
-        return self.celery_result_backend or self.redis_url
+    def result_backend(self) -> str | None:
+        """Task results are never read (job state lives in PostgreSQL); Redis stores them when it is the
+        broker, otherwise results are disabled unless CELERY_RESULT_BACKEND is set."""
+        if self.celery_result_backend:
+            return self.celery_result_backend
+        return self.redis_url if self.broker_url.startswith("redis") else None
 
 
 @lru_cache
