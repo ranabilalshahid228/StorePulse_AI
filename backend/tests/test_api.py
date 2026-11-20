@@ -22,6 +22,11 @@ def test_openapi_lists_core_routes() -> None:
         "/api/v1/forecasts/{forecast_id}/pnl",
         "/api/v1/forecasts/{forecast_id}/workforce",
         "/api/v1/reports/forecasts/{forecast_id}/store-plan.pdf",
+        "/api/v1/autopilot/runs",
+        "/api/v1/autopilot/runs/{run_id}",
+        "/api/v1/autopilot/runs/{run_id}/report.pdf",
+        "/api/v1/autopilot/runs/{run_id}/plan.xlsx",
+        "/api/v1/autopilot/runs/{run_id}/plan.csv",
     ]:
         assert p in paths, p
 

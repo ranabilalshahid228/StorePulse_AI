@@ -2,13 +2,14 @@
 
 Multi-tenant SaaS for retail demand forecasting and store autopilot: upload sales history → map schema →
 data-health diagnostics → train / Optuna-tune models → multi-horizon & event forecasts → P&L and
-workforce plans → CSV/PDF reports.
+workforce plans → Store Autopilot (what-if plans + prescriptive actions) → CSV/Excel/PDF reports.
 
 ```
 Organization ─┬─ User (owner | admin | analyst | viewer)
-              └─ Store ─── FinancialStaffingConfig (1:1)
+              └─ Store ─── FinancialStaffingConfig (1:1, incl. autopilot_settings)
               └─ Dataset (store_id optional: multi-store files map rows via store column)
-                    └─ ModelRun (train | tune) ─── ForecastRun (multi_horizon | event)
+                    └─ ModelRun (train | tune) ─┬─ ForecastRun (multi_horizon | event)
+                                                └─ AutopilotRun (store × window × scenario)
 ```
 
 ## Repository layout
@@ -32,15 +33,17 @@ Organization ─┬─ User (owner | admin | analyst | viewer)
 │   │   ├── schemas/          ← Pydantic v2 request/response models (one module per domain)
 │   │   ├── api/
 │   │   │   ├── deps.py       ← DbSession, CurrentPrincipal, AnalystPrincipal, AdminPrincipal
-│   │   │   └── v1/           ← routers: auth, stores, datasets, model_runs, forecasts, finance, reports, health
-│   │   ├── services/         ← storage (local/S3), ingestion, diagnostics, finance, reports, tenancy helpers
+│   │   │   └── v1/           ← routers: auth, stores, datasets, model_runs, forecasts, finance, reports,
+│   │   │                        autopilot, health
+│   │   ├── services/         ← storage (local/S3), ingestion, diagnostics, finance, reports, tenancy helpers,
+│   │   │                        autopilot (engine), autopilot_report (PDF/XLSX/CSV)
 │   │   ├── ml/               ← features, model families, metrics, training/tuning, forecasting, plots
 │   │   └── workers/          ← celery_app, tasks, progress reporter, dispatch (enqueue by task name)
 │   └── tests/                ← pytest: API envelope/auth, finance math, end-to-end pipeline on Rossmann
 └── frontend/                 ← Next.js 15 App Router + TypeScript + Tailwind v4 + shadcn/ui-style + Recharts
     └── src/
         ├── app/(app)/        ← authenticated shell: / (Command Center), /data, /data/[id], /model-lab,
-        │                        /model-lab/[id], /pnl-workforce, /reports, /stores
+        │                        /model-lab/[id], /autopilot, /pnl-workforce, /reports, /stores
         ├── app/login/        ← sign in / create workspace
         ├── components/ui/    ← shadcn-style primitives (button, card, badge, input, select, table, progress)
         ├── components/       ← app-sidebar, shared (PageHeader, JobProgress, Kpi…), charts (Recharts)
@@ -139,6 +142,8 @@ alembic downgrade -1
 6. `POST /model-runs/train` or `/model-runs/tune`; `GET /model-runs/leaderboard?dataset_id=…`.
 7. `POST /forecasts` or `/forecasts/event`; then `/forecasts/{id}/pnl|workforce?store_id=…`.
 8. `GET /reports/forecasts/{id}/forecast.csv | store-plan.csv | store-plan.pdf`.
+9. `POST /autopilot/runs` (`store_id`, `model_run_id`, `horizon`, optional `scenario`) → poll
+   `GET /autopilot/runs/{id}` → `GET /autopilot/runs/{id}/report.pdf | plan.xlsx | plan.csv`.
 
 ### Multi-file datasets (auxiliary tables + joins)
 
@@ -209,13 +214,49 @@ The ensemble's weights are fitted on the first half of the validation window; on
 the fitted blend scores WAPE 0.0779 vs LightGBM 0.0801 and GRU 0.0840. Empirical P10–P90 bands hold
 78–85 % coverage out-of-sample (`coverage_holdout`).
 
+## Store Autopilot
+
+`services/autopilot.py::run_autopilot` (pure: model + parquet + config in, JSON plan out) is run by the
+`storepulse.run_autopilot` task (`forecasting` queue); the full plan lands in `autopilot_runs.result`,
+headline KPIs in `summary`, and exports render from `result` (`services/autopilot_report.py`).
+
+- **Window** (`resolve_window`): `next_day` / `week` (7) / `month` (30) start the day after the
+  dataset's last date; `custom` ranges must lie in (data end, data end + model horizon].
+- **Scenario** (`schemas/autopilot.py::AutopilotScenario`): levers on date ranges. `promo`, `open`,
+  `school_holiday`, `state_holiday`, raw `covariates` re-forecast through the model (categoricals like
+  Rossmann StateHoliday are overridable); `demand_pct` (uplift/shock, local/competitor events) and
+  `price_change_pct` (+ optional `price_elasticity`) adjust afterwards. Store-level: `promo2` toggle
+  (needs a model trained with store features), `cogs_pct` / `promo_discount_pct` margin overrides,
+  `covariate_defaults` = business-as-usual calendar (e.g. `{"Promo": 0}`; otherwise future flags repeat
+  the last observed same-weekday value - Rossmann's data ends in a promo week). Any scenario also runs a
+  baseline plan; `scenario_impact` and promo-profitability actions diff the two.
+- **Closures**: Open = 0 → 0 sales, footfall and headcount (model rule + plan); overhead still accrues.
+- **Cold start**: < `cold_start_min_days` open days → median profile of the most similar stores (same
+  type & assortment, nearest competition distance; `cohort_codes`), scaled to the store's last ≤ 28 open
+  days when it has ≥ 14. Needs a multi-store model.
+- **Footfall**: customers target as-is; else forecast / historical basket size (target per customer by
+  weekday × promo over `basket_lookback_days`); else configured ATV / UPT; else a validation error.
+- **P&L** (`compute_pnl`): revenue P10/P50/P90 (quantile model or empirical band), list-price revenue on
+  promo days, COGS, gross profit, labour (planned on P50, fixed across bands), overhead, net profit
+  P10/P50/P90, break-even revenue = (labour + overhead) / contribution ratio, margin of safety.
+- **Shifts** (`plan_shifts`): `autopilot_settings.shifts` (default Morning 30 % / Midday Peak 45 % /
+  Evening 25 % of footfall, operating hours split evenly); headcount = max(min staff, ceil(required
+  hours / shift hours)), capped by `max_staff_per_shift` (→ understaffed); peak hour (`peak_hour_share`)
+  gaps → floaters for `surge_block_hours`; utilization < `overstaff_utilization` → overstaffed.
+- **Actions** (`recommend`): priority (critical/high/medium/low) then |impact|: cold start, loss days,
+  P10 downside below break-even, capacity limits, peak cover, idle labour, closures, holidays, promo
+  profitability vs baseline, scenario impact, anomalies (forecast vs recent same-weekday norm, zero
+  sales while open, trend vs last year) and model uncertainty (WAPE > 15 %).
+- Settings defaults are planning conventions, not data: every value used is echoed in `assumptions`.
+  The Stores page round-trips `autopilot_settings` on save (a PUT without it resets to defaults).
+
 ## Background jobs & progress
 
 - Queues: `ingestion` (upload → Parquet + diagnostics), `training` (train + Optuna), `forecasting`.
 - Tasks receive **only the row id**; all inputs live in Postgres → idempotent and re-runnable
   (`acks_late`, `reject_on_worker_lost`, `prefetch_multiplier=1`).
 - `JobStateMixin` columns (`status, progress_pct, stage, status_message, started_at, finished_at, error,
-  celery_task_id`) on `datasets`, `model_runs`, `forecast_runs`. Workers write through
+  celery_task_id`) on `datasets`, `model_runs`, `forecast_runs`, `autopilot_runs`. Workers write through
   `workers/progress.py::ProgressReporter` (throttled to ≤2 writes/s; `.sub(lo, hi)` maps sub-stages
   into a slice of the bar). The API exposes them via GET + SSE (`/…/{id}/events`); the UI polls every 2 s.
 - The API never imports ML code for dispatch: `workers/dispatch.py` enqueues by task **name**.

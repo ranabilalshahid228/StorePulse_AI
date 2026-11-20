@@ -63,3 +63,22 @@ def rossmann_mapping() -> dict[str, Any]:
         "promo_column": "Promo",
         "open_column": "Open",
     }
+
+
+@pytest.fixture(scope="session")
+def canonical(rossmann_subset: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from app.schemas.dataset import SchemaMapping
+    from app.services.ingestion import convert_to_parquet
+
+    out = tmp_path_factory.mktemp("canon") / "canonical.parquet"
+    stats = convert_to_parquet(
+        rossmann_subset,
+        "csv",
+        SchemaMapping.model_validate(rossmann_mapping()),
+        out,
+        200_000,
+        lambda f, s: None,
+    )
+    assert stats["store_codes"] == ["1", "2", "3"]
+    assert stats["series_count"] == 3
+    return out

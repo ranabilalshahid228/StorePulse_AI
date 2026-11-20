@@ -3,14 +3,14 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api } from "@/lib/api";
-import type { FinancialConfig, Store } from "@/lib/types";
+import type { AutopilotSettings, FinancialConfig, Store } from "@/lib/types";
 import { useStores } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Table, TD, TH, THead, TR } from "@/components/ui/primitives";
 import { EmptyState, ErrorNotice, PageHeader } from "@/components/shared";
 import { formatNumber } from "@/lib/utils";
 
-const FIELDS: { key: keyof FinancialConfig; label: string; hint?: string; step?: string }[] = [
+const FIELDS: { key: Exclude<keyof FinancialConfig, "autopilot_settings">; label: string; hint?: string; step?: string }[] = [
   { key: "gross_margin_pct", label: "Planned gross margin", hint: "Fraction, e.g. 0.42", step: "0.0001" },
   { key: "cogs_pct", label: "COGS share", hint: "Fraction of list-price revenue", step: "0.0001" },
   { key: "promo_discount_pct", label: "Promo discount", hint: "Fraction off list price", step: "0.0001" },
@@ -23,6 +23,23 @@ const FIELDS: { key: keyof FinancialConfig; label: string; hint?: string; step?:
   { key: "avg_transaction_value", label: "Avg transaction value", hint: "Optional if dataset has customers", step: "0.01" },
   { key: "avg_units_per_transaction", label: "Avg units / transaction", hint: "Needed for unit targets", step: "0.001" },
 ];
+
+/** Mirrors AutopilotSettings defaults (backend app/schemas/autopilot.py) for stores without a config yet. */
+const DEFAULT_AUTOPILOT: AutopilotSettings = {
+  shifts: [
+    { name: "Morning", traffic_share: 0.3 },
+    { name: "Midday Peak", traffic_share: 0.45 },
+    { name: "Evening", traffic_share: 0.25 },
+  ],
+  peak_hour_share: 0.14,
+  max_staff_per_shift: null,
+  overstaff_utilization: 0.55,
+  surge_block_hours: 2,
+  cold_start_min_days: 90,
+  cohort_size: 10,
+  basket_lookback_days: 182,
+  anomaly_threshold: 0.35,
+};
 
 export default function StoresPage() {
   const stores = useStores();
@@ -91,6 +108,15 @@ function ConfigForm({ store }: { store: Store }) {
       const v = String(f.get(key) ?? "").trim();
       body[key] = v === "" ? null : key === "min_staff_per_shift" ? Number(v) : v;
     }
+    // Round-trip the Autopilot rules so a save here never resets them to defaults.
+    const ap = cfg.data?.autopilot_settings ?? DEFAULT_AUTOPILOT;
+    const maxStaff = String(f.get("ap_max_staff") ?? "").trim();
+    body.autopilot_settings = {
+      ...ap,
+      max_staff_per_shift: maxStaff === "" ? null : Number(maxStaff),
+      peak_hour_share: Number(f.get("ap_peak_share")) / 100,
+      shifts: ap.shifts.map((s) => ({ ...s, traffic_share: Number(f.get(`ap_share_${s.name}`)) / 100 })),
+    };
     save.mutate(body);
   }
 
@@ -116,6 +142,21 @@ function ConfigForm({ store }: { store: Store }) {
               />
             </Field>
           ))}
+          <div className="md:col-span-2 border-t pt-4">
+            <p className="text-sm font-medium">Store Autopilot rules</p>
+            <p className="text-xs text-muted-foreground">Shift traffic split, peak hour and capacity used for shift plans and staffing warnings.</p>
+          </div>
+          {(current?.autopilot_settings ?? DEFAULT_AUTOPILOT).shifts.map((s) => (
+            <Field key={s.name} label={`${s.name} share of footfall (%)`}>
+              <Input name={`ap_share_${s.name}`} type="number" step="1" min={1} max={100} required defaultValue={Math.round(s.traffic_share * 100)} />
+            </Field>
+          ))}
+          <Field label="Peak-hour share of daily footfall (%)">
+            <Input name="ap_peak_share" type="number" step="1" min={1} max={100} required defaultValue={Math.round((current?.autopilot_settings ?? DEFAULT_AUTOPILOT).peak_hour_share * 100)} />
+          </Field>
+          <Field label="Max staff per shift" hint="Store capacity; blank = no limit">
+            <Input name="ap_max_staff" type="number" step="1" min={1} defaultValue={(current?.autopilot_settings ?? DEFAULT_AUTOPILOT).max_staff_per_shift ?? ""} />
+          </Field>
           <div className="md:col-span-2"><ErrorNotice error={save.error ?? cfg.error} /></div>
           <div className="md:col-span-2 flex items-center gap-3">
             <Button type="submit" disabled={save.isPending}>Save configuration</Button>

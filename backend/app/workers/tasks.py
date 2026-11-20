@@ -10,13 +10,14 @@ import logging
 import tempfile
 import traceback
 import uuid
+from datetime import date
 from pathlib import Path
 
 from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.session import sync_session
-from app.models import Dataset, ForecastRun, ModelRun, Store
+from app.models import AutopilotRun, Dataset, FinancialStaffingConfig, ForecastRun, ModelRun, Store
 from app.models.enums import DatasetStatus, JobStatus, ModelFamily
 from app.schemas.dataset import SchemaMapping
 from app.services.storage import ArtifactKeys, get_storage
@@ -347,5 +348,138 @@ def run_forecast(forecast_id: str) -> dict:
         return {"rows": len(out)}
     except Exception as exc:
         logger.error("Forecast failed for %s\n%s", fid, traceback.format_exc())
+        progress.fail(_err(exc))
+        raise
+
+
+# ----------------------------------------------------------------------------------------
+# Store Autopilot
+# ----------------------------------------------------------------------------------------
+
+
+def model_comparison(s, org_id: uuid.UUID, dataset_id: uuid.UUID) -> list[dict]:  # noqa: ANN001
+    """Finished model runs on the same dataset, best validation WAPE first (for the report)."""
+    runs = s.scalars(
+        select(ModelRun).where(
+            ModelRun.organization_id == org_id,
+            ModelRun.dataset_id == dataset_id,
+            ModelRun.status == JobStatus.SUCCEEDED.value,
+        )
+    ).all()
+    rows = []
+    for r in runs:
+        m = r.metrics or {}
+        if m.get("wape") is None:
+            continue
+        rows.append(
+            {
+                "model_run_id": str(r.id),
+                "name": r.name,
+                "model_family": r.model_family,
+                "run_type": r.run_type,
+                "horizon_days": r.horizon_days,
+                **{k: m.get(k) for k in ("wape", "rmspe", "rmsse", "rmse", "mae", "r2")},
+                "accuracy": 1 - m["wape"],
+                "interval_coverage": (m.get("interval") or {}).get("coverage"),
+            }
+        )
+    return sorted(rows, key=lambda x: x["wape"])
+
+
+@celery_app.task(name="storepulse.run_autopilot")
+def run_autopilot(autopilot_id: str) -> dict:
+    from app.ml.families import ForecastModel
+    from app.schemas.autopilot import AutopilotScenario, AutopilotSettings
+    from app.services import autopilot, finance
+
+    aid = uuid.UUID(autopilot_id)
+    progress = ProgressReporter(AutopilotRun, aid)
+    progress.start()
+    try:
+        with sync_session() as s:
+            ap = s.get(AutopilotRun, aid)
+            if ap is None:
+                raise LookupError(f"autopilot run {aid} not found")
+            run = s.get(ModelRun, ap.model_run_id)
+            ds = s.get(Dataset, ap.dataset_id)
+            store = s.get(Store, ap.store_id)
+            assert run is not None and ds is not None and store is not None
+            assert run.artifact_path and ds.parquet_path
+            cfg = s.scalars(
+                select(FinancialStaffingConfig).where(FinancialStaffingConfig.store_id == store.id)
+            ).one_or_none()
+            if cfg is None:
+                raise LookupError("store has no financial & staffing config")
+            scope = s.get(Store, run.store_id) if run.store_id else None
+            metric_keys = ("wape", "rmspe", "rmsse", "rmse", "mae", "r2", "bias_pct")
+            ctx = {
+                "org_id": ap.organization_id,
+                "artifact": run.artifact_path,
+                "metrics": dict(run.metrics),
+                "model_info": {
+                    "model_run_id": str(run.id),
+                    "name": run.name,
+                    "model_family": run.model_family,
+                    "run_type": run.run_type,
+                    "horizon_days": run.horizon_days,
+                    "metrics": {k: run.metrics.get(k) for k in metric_keys},
+                },
+                "comparison": model_comparison(s, ap.organization_id, ap.dataset_id),
+                "parquet": ds.parquet_path,
+                "mapping": dict(ds.schema_mapping or {}),
+                "store_code": store.code,
+                "store_meta": _store_static(s, ap.organization_id),
+                "target_type": store.target_type,
+                "currency": store.currency,
+                "finance": finance.FinanceInputs.from_config(cfg, store.target_type),
+                "settings": AutopilotSettings.model_validate(cfg.autopilot_settings or {}),
+                "scenario": AutopilotScenario.model_validate(ap.scenario or {}),
+                "horizon": ap.horizon,
+                "start": ap.start_date,
+                "end": ap.end_date,
+                "scope_store_code": scope.code if scope else None,
+            }
+        storage = get_storage()
+        model = ForecastModel.load(storage.local_path(ctx["artifact"]))
+        mapping = SchemaMapping.model_validate(ctx["mapping"])
+        joins = load_mapping_joins(ctx["org_id"], mapping) if mapping.joins else []
+
+        def enrich(frame):  # noqa: ANN001, ANN202 - real future covariates from auxiliary tables
+            from app.services.ingestion import coerce_covariates
+            from app.services.joins import apply_joins
+
+            frame = apply_joins(frame, joins) if joins else frame
+            return coerce_covariates(frame.drop(columns=mapping.helper_columns, errors="ignore"), mapping)
+
+        result = autopilot.run_autopilot(
+            model=model,
+            metrics=ctx["metrics"],
+            parquet_path=storage.local_path(ctx["parquet"]),
+            mapping=ctx["mapping"],
+            store_code=ctx["store_code"],
+            store_meta=ctx["store_meta"],
+            target_type=ctx["target_type"],
+            finance=ctx["finance"],
+            settings=ctx["settings"],
+            scenario=ctx["scenario"],
+            horizon=ctx["horizon"],
+            start=ctx["start"],
+            end=ctx["end"],
+            currency=ctx["currency"],
+            progress=progress,
+            model_info=ctx["model_info"],
+            model_comparison=ctx["comparison"],
+            scope_store_code=ctx["scope_store_code"],
+            enrich=enrich if joins else None,
+        )
+        progress.succeed(
+            result=result,
+            summary=autopilot.summary_of(result),
+            start_date=date.fromisoformat(result["window"]["start"]),
+            end_date=date.fromisoformat(result["window"]["end"]),
+        )
+        return {"days": len(result["days"])}
+    except Exception as exc:
+        logger.error("Autopilot failed for %s\n%s", aid, traceback.format_exc())
         progress.fail(_err(exc))
         raise

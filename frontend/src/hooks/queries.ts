@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api, isActive } from "@/lib/api";
-import type { Dataset, ForecastRun, Me, ModelRun, Page, Store } from "@/lib/types";
+import type { AutopilotRun, AutopilotRunDetail, Dataset, ForecastRun, Me, ModelRun, Page, Store } from "@/lib/types";
 
 /** Poll every 2s while any item is still running (progress lives in PostgreSQL). */
 const pollWhileActive =
@@ -41,4 +41,19 @@ export const useForecasts = () =>
     queryKey: ["forecasts"],
     queryFn: () => api.get<Page<ForecastRun>>("/forecasts?limit=100"),
     refetchInterval: pollWhileActive<ForecastRun>((d) => (d as Page<ForecastRun>).items),
+  });
+
+export const useAutopilotRuns = (storeId?: string) =>
+  useQuery({
+    queryKey: ["autopilot-runs", storeId ?? "all"],
+    queryFn: () => api.get<Page<AutopilotRun>>(`/autopilot/runs?limit=50${storeId ? `&store_id=${storeId}` : ""}`),
+    refetchInterval: pollWhileActive<AutopilotRun>((d) => (d as Page<AutopilotRun>).items),
+  });
+
+export const useAutopilotRun = (id: string | null) =>
+  useQuery({
+    queryKey: ["autopilot-run", id],
+    enabled: !!id,
+    queryFn: () => api.get<AutopilotRunDetail>(`/autopilot/runs/${id}`),
+    refetchInterval: pollWhileActive<AutopilotRunDetail>((d) => [d as AutopilotRunDetail]),
   });

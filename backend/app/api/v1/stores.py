@@ -165,6 +165,7 @@ async def upsert_financial_config(
         db.add(cfg)
     for k, v in body.model_dump().items():
         setattr(cfg, k, v)
+    cfg.autopilot_settings = body.autopilot_settings.model_dump(mode="json")
     await db.commit()
     await db.refresh(cfg)
     return cfg

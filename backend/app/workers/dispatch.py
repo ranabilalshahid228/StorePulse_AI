@@ -16,6 +16,7 @@ TASK_HEALTH = "storepulse.compute_dataset_health"
 TASK_TRAIN = "storepulse.train_model"
 TASK_TUNE = "storepulse.tune_model"
 TASK_FORECAST = "storepulse.run_forecast"
+TASK_AUTOPILOT = "storepulse.run_autopilot"
 
 
 def enqueue(task_name: str, obj_id: uuid.UUID, queue: str, **kwargs: Any) -> str:

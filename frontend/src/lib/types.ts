@@ -55,6 +55,7 @@ export interface FinancialConfig {
   operating_hours_per_day: string;
   avg_transaction_value: string | null;
   avg_units_per_transaction: string | null;
+  autopilot_settings?: AutopilotSettings;
 }
 
 export interface ColumnProfile {
@@ -148,6 +149,7 @@ export interface ModelRun {
   hyperparameters: Record<string, unknown>;
   n_trials: number | null;
   training_config: { history_days?: number | null; use_store_features?: boolean };
+  feature_columns: string[];
   metrics: Record<string, unknown> & {
     wape?: number;
     rmse?: number;
@@ -277,4 +279,216 @@ export interface WorkforcePlan {
   total_labor_cost: number;
   peak_staff_per_shift: number;
   assumptions: string[];
+}
+
+/* ---- Store Autopilot (mirrors app/schemas/autopilot.py) ------------------------------------ */
+
+export interface ShiftDefinition {
+  name: string;
+  traffic_share: number;
+  hours?: number | null;
+}
+
+export interface AutopilotSettings {
+  shifts: ShiftDefinition[];
+  peak_hour_share: number;
+  max_staff_per_shift: number | null;
+  overstaff_utilization: number;
+  surge_block_hours: number;
+  cold_start_min_days: number;
+  cohort_size: number;
+  basket_lookback_days: number;
+  anomaly_threshold: number;
+}
+
+export type HorizonKind = "next_day" | "week" | "month" | "custom";
+export type LeverKind = "promo" | "holiday" | "closure" | "local_event" | "competitor" | "price" | "custom";
+
+export interface ScenarioLever {
+  name: string;
+  kind: LeverKind;
+  start_date: string;
+  end_date: string;
+  promo?: boolean | null;
+  school_holiday?: boolean | null;
+  state_holiday?: string | null;
+  open?: boolean | null;
+  demand_pct?: number | null;
+  price_change_pct?: number | null;
+  covariates?: Record<string, number | string>;
+}
+
+export interface AutopilotScenario {
+  levers: ScenarioLever[];
+  promo2?: boolean | null;
+  promo2_interval?: string | null;
+  covariate_defaults?: Record<string, number>;
+  price_elasticity?: number | null;
+  cogs_pct?: number | null;
+  promo_discount_pct?: number | null;
+}
+
+export interface AutopilotRequest {
+  store_id: UUID;
+  model_run_id: UUID;
+  horizon: HorizonKind;
+  start_date?: string | null;
+  end_date?: string | null;
+  scenario: AutopilotScenario;
+  name?: string | null;
+}
+
+export type Priority = "critical" | "high" | "medium" | "low";
+
+export interface Recommendation {
+  priority: Priority;
+  category: string;
+  title: string;
+  detail: string;
+  dates: string[];
+  impact: number | null;
+}
+
+export interface AutopilotDay {
+  ds: string;
+  is_open: boolean;
+  is_promo: boolean;
+  event: string | null;
+  revenue_p10: number;
+  revenue_p50: number;
+  revenue_p90: number;
+  baseline_revenue_p50?: number | null;
+  baseline_net_profit_p50?: number | null;
+  footfall: number;
+  basket_size: number | null;
+  gross_revenue: number;
+  promo_discount: number;
+  cogs: number;
+  gross_profit: number;
+  labor_hours: number;
+  labor_cost: number;
+  fixed_overhead: number;
+  net_profit_p10: number;
+  net_profit_p50: number;
+  net_profit_p90: number;
+  break_even_revenue: number | null;
+  surge_staff: number;
+  peak_staff_needed: number;
+  utilization: number | null;
+  staffing_status: "ok" | "understaffed" | "overstaffed" | "closed";
+  [staffColumn: `staff_${string}`]: number;
+}
+
+export interface AutopilotShift {
+  ds: string;
+  shift: string;
+  hours: number;
+  expected_customers: number;
+  required_hours: number;
+  headcount: number;
+  utilization: number | null;
+  status: "ok" | "understaffed" | "overstaffed" | "closed";
+}
+
+export interface AutopilotTotals {
+  gross_revenue: number;
+  promo_discount: number;
+  revenue_p10: number;
+  revenue_p50: number;
+  revenue_p90: number;
+  cogs: number;
+  gross_profit: number;
+  labor_cost: number;
+  fixed_overhead: number;
+  net_profit_p10: number;
+  net_profit_p50: number;
+  net_profit_p90: number;
+  gross_margin_pct: number | null;
+  net_margin_pct: number | null;
+  break_even_revenue: number | null;
+  margin_of_safety_pct: number | null;
+}
+
+export interface AutopilotKpis {
+  window_start: string;
+  window_end: string;
+  days: number;
+  open_days: number;
+  revenue_p10: number;
+  revenue_p50: number;
+  revenue_p90: number;
+  net_profit_p10: number;
+  net_profit_p50: number;
+  net_profit_p90: number;
+  gross_margin_pct: number | null;
+  net_margin_pct: number | null;
+  break_even_revenue: number | null;
+  margin_of_safety_pct: number | null;
+  footfall: number;
+  labor_hours: number;
+  labor_cost: number;
+  peak_staff_per_shift: number;
+  understaffed_shifts: number;
+  overstaffed_shifts: number;
+  cold_start: boolean;
+  recommendations: Record<Priority, number>;
+  scenario_net_profit_delta?: number;
+}
+
+export interface ModelComparisonRow {
+  model_run_id: UUID;
+  name: string | null;
+  model_family: string;
+  run_type: string;
+  horizon_days: number;
+  wape: number | null;
+  rmspe: number | null;
+  rmsse: number | null;
+  r2: number | null;
+  accuracy: number | null;
+  interval_coverage: number | null;
+}
+
+export interface AutopilotResult {
+  window: { kind: HorizonKind; start: string; end: string; history_end: string; days: number };
+  store_code: string;
+  currency: string;
+  target_type: TargetType;
+  kpis: AutopilotKpis;
+  totals: AutopilotTotals;
+  scenario_impact: { revenue_p50: number; net_profit_p50: number; labor_cost: number } | null;
+  days: AutopilotDay[];
+  shifts: AutopilotShift[];
+  shift_names: string[];
+  recommendations: Recommendation[];
+  anomalies: { kind: string; ds: string | null; detail: string }[];
+  cold_start: { codes: string[]; matched_on: string[]; scale: number; note: string; open_days: number } | null;
+  model: { model_run_id?: UUID; model_family?: string; metrics?: Record<string, number | null> };
+  model_comparison: ModelComparisonRow[];
+  scenario: AutopilotScenario;
+  assumptions: string[];
+}
+
+export interface AutopilotRun {
+  id: UUID;
+  store_id: UUID;
+  model_run_id: UUID;
+  dataset_id: UUID;
+  name: string | null;
+  horizon: HorizonKind;
+  start_date: string | null;
+  end_date: string | null;
+  scenario: AutopilotScenario;
+  summary: Partial<AutopilotKpis>;
+  status: string;
+  progress_pct: number;
+  stage: string | null;
+  status_message: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface AutopilotRunDetail extends AutopilotRun {
+  result: AutopilotResult | Record<string, never>;
 }

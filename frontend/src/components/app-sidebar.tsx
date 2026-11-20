@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, BarChart3, Database, FileText, FlaskConical, LogOut, Store, Wallet } from "lucide-react";
+import { Activity, BarChart3, Database, FileText, FlaskConical, LogOut, Rocket, Store, Wallet } from "lucide-react";
 import { tokens } from "@/lib/api";
 import { useMe } from "@/hooks/queries";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,7 @@ const NAV = [
   { href: "/", label: "Command Center", icon: Activity },
   { href: "/data", label: "Data & EDA", icon: Database },
   { href: "/model-lab", label: "Model Lab", icon: FlaskConical },
+  { href: "/autopilot", label: "Store Autopilot", icon: Rocket },
   { href: "/pnl-workforce", label: "P&L & Workforce", icon: Wallet },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/stores", label: "Stores", icon: Store },

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -120,6 +121,11 @@ class FinancialStaffingConfig(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Needed to convert a sales/units forecast into footfall when target_type != customers.
     avg_transaction_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     avg_units_per_transaction: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+    # Autopilot operating rules (shift profile, capacity, thresholds); see
+    # schemas.autopilot.AutopilotSettings.
+    autopilot_settings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
     store: Mapped[Store] = relationship(back_populates="financial_config")
 

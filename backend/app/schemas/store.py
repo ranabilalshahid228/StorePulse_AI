@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from app.models.enums import TargetType
+from app.schemas.autopilot import AutopilotSettings
 from app.schemas.common import ORMModel
 
 Fraction = Field(ge=0, le=1, description="Fraction in [0, 1], e.g. 0.35 for 35 %")
@@ -71,6 +72,10 @@ class FinancialStaffingConfigIn(BaseModel):
     operating_hours_per_day: Decimal = Field(default=Decimal("12"), gt=0, le=24)
     avg_transaction_value: Decimal | None = Field(default=None, gt=0)
     avg_units_per_transaction: Decimal | None = Field(default=None, gt=0)
+    autopilot_settings: AutopilotSettings = Field(
+        default_factory=AutopilotSettings,
+        description="Store Autopilot shift profile, capacity and thresholds",
+    )
 
     @model_validator(mode="after")
     def _margin_consistency(self) -> FinancialStaffingConfigIn:

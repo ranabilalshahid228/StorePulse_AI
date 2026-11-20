@@ -12,28 +12,11 @@ from app.ml.families import FAMILIES, ForecastModel
 from app.ml.forecasting import run_forecast
 from app.ml.training import _fit_once, prepare_data
 from app.models.enums import ModelFamily
-from app.schemas.dataset import SchemaMapping
 from app.services.diagnostics import compute_health_report
-from app.services.ingestion import convert_to_parquet, profile_upload
+from app.services.ingestion import profile_upload
 from tests.conftest import rossmann_mapping
 
 HORIZON = 42
-
-
-@pytest.fixture(scope="module")
-def canonical(rossmann_subset: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
-    out = tmp_path_factory.mktemp("canon") / "canonical.parquet"
-    stats = convert_to_parquet(
-        rossmann_subset,
-        "csv",
-        SchemaMapping.model_validate(rossmann_mapping()),
-        out,
-        200_000,
-        lambda f, s: None,
-    )
-    assert stats["store_codes"] == ["1", "2", "3"]
-    assert stats["series_count"] == 3
-    return out
 
 
 def test_profile_suggests_rossmann_mapping(rossmann_subset: Path) -> None:
