@@ -1,6 +1,7 @@
-# Secrets
+# Secrets (keep the documented template)
 .env
-.env.local
+.env.*
+!.env.example
 backend/.env
 
 # Python
@@ -24,5 +25,15 @@ data/raw/
 data/processed/
 *.parquet
 *.pt
+*.pth
 *.pkl
+*.ckpt
+*.joblib
+*.onnx
+*.safetensors
+*.h5
 mlruns/
+optuna*.db
+data/**/*.csv
+data/**/*.zip
+*.feather
