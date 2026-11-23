@@ -235,8 +235,6 @@ def store_days(fc: pd.DataFrame, cols: CovariateColumns) -> pd.DataFrame:
         df["price_revenue"] = df["yhat"] * df["price"]
     agg: dict[str, tuple[str, str]] = {
         "yhat": ("yhat", "sum"),
-        "yhat_lower": ("yhat_lower", "sum"),
-        "yhat_upper": ("yhat_upper", "sum"),
         "is_promo": ("is_promo", "max"),
         "is_open": ("is_open", "max"),
     }
@@ -245,7 +243,13 @@ def store_days(fc: pd.DataFrame, cols: CovariateColumns) -> pd.DataFrame:
     for c in (cols.school_holiday, cols.state_holiday):
         if c and c in df:
             agg[c] = (c, "first")
-    days = df.groupby("ds", as_index=False).agg(**agg)
+    grouped = df.groupby("ds", as_index=False)
+    days = grouped.agg(**agg)
+    # A missing interval must stay missing so planning can fall back to the point forecast.
+    counts = grouped.size()["size"]
+    for bound in ("yhat_lower", "yhat_upper"):
+        available = grouped[bound].count()[bound] == counts
+        days[bound] = grouped[bound].sum()[bound].where(available)
     # P50 only when every series of the day has one (quantile models); else the point forecast is used.
     p50 = df.groupby("ds")["yhat_p50"].agg(lambda v: v.sum() if v.notna().all() else np.nan)
     days["yhat_p50"] = days["ds"].map(p50)
@@ -722,7 +726,11 @@ def recommend(
             list(loss["ds"]),
             impact=float(loss["net_profit_p50"].sum()),
         )
-    risk = open_[(open_["net_profit_p50"] >= 0) & (open_["revenue_p10"] < open_["break_even_revenue"])]
+    risk = open_[
+        open_["yhat_lower"].notna()
+        & (open_["net_profit_p50"] >= 0)
+        & (open_["revenue_p10"] < open_["break_even_revenue"])
+    ]
     if len(risk):
         add(
             "medium",
@@ -934,9 +942,9 @@ def _plan(
     volume_f = price_f**elasticity if elasticity is not None else pd.Series(1.0, index=days.index)
     p50_src = days["yhat_p50"].where(days["yhat_p50"].notna(), days["yhat"])
     src = {
-        "p10": days["yhat_lower"].fillna(days["yhat"]),
+        "p10": days["yhat_lower"].fillna(p50_src),
         "p50": p50_src,
-        "p90": days["yhat_upper"].fillna(days["yhat"]),
+        "p90": days["yhat_upper"].fillna(p50_src),
     }
     closed = ~days["is_open"].astype(bool)
     for q in QUANTS:
@@ -1162,6 +1170,8 @@ def run_autopilot(
 
     totals = scen["totals"]
     layout = shift_layout(finance, settings)
+    open_days = plan.loc[plan["is_open"], ["yhat_lower", "yhat_upper"]]
+    interval_available = not open_days.empty and bool(open_days.notna().all().all())
     kpis = {
         "window_start": window.start.isoformat(),
         "window_end": window.end.isoformat(),
@@ -1219,9 +1229,9 @@ def run_autopilot(
         "Revenue bands: P10/P90 from "
         + (
             "the model's quantile outputs."
-            if interval.get("method") == "quantile_model"
+            if interval_available and interval.get("method") == "quantile_model"
             else f"validation residuals (empirical, coverage {interval.get('coverage', float('nan')):.0%})."
-            if interval
+            if interval_available and interval
             else "the point forecast (no interval available)."
         )
         + " Labour is planned on P50 and held fixed across bands.",
@@ -1261,6 +1271,7 @@ def run_autopilot(
         "currency": currency,
         "target_type": target_type.value,
         "kpis": kpis,
+        "interval_available": interval_available,
         "totals": totals,
         "scenario_impact": impact,
         "days": _records(plan),

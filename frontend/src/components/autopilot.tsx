@@ -52,9 +52,14 @@ export function KpiRange({
   );
 }
 
+export function hasPlanInterval(res: AutopilotResult) {
+  return res.interval_available ?? !res.assumptions.some((line) => line.includes("no interval available"));
+}
+
 export function PlanKpis({ res }: { res: AutopilotResult }) {
   const k = res.kpis;
   const cur = res.currency;
+  const hasInterval = hasPlanInterval(res);
   const isSales = res.target_type === "sales";
   const demand = (v: number | undefined) => (v === undefined ? "—" : isSales ? formatCurrency(v, cur) : formatCompact(v));
   const delta = res.scenario_impact;
@@ -63,8 +68,8 @@ export function PlanKpis({ res }: { res: AutopilotResult }) {
       <KpiRange
         label={isSales ? "Forecasted sales" : res.target_type === "units" ? "Forecasted units" : "Forecasted customers"}
         value={demand(k.demand_p50 ?? k.revenue_p50)}
-        low={demand(k.demand_p10 ?? k.revenue_p10)}
-        high={demand(k.demand_p90 ?? k.revenue_p90)}
+        low={hasInterval ? demand(k.demand_p10 ?? k.revenue_p10) : undefined}
+        high={hasInterval ? demand(k.demand_p90 ?? k.revenue_p90) : undefined}
         sub={
           delta
             ? `${delta.revenue_p50 >= 0 ? "+" : ""}${formatCurrency(delta.revenue_p50, cur)} revenue vs baseline`
@@ -74,15 +79,15 @@ export function PlanKpis({ res }: { res: AutopilotResult }) {
       <KpiRange
         label="Estimated footfall"
         value={formatNumber(k.footfall)}
-        low={k.footfall_p10 !== undefined ? formatNumber(k.footfall_p10) : undefined}
-        high={k.footfall_p90 !== undefined ? formatNumber(k.footfall_p90) : undefined}
+        low={hasInterval && k.footfall_p10 !== undefined ? formatNumber(k.footfall_p10) : undefined}
+        high={hasInterval && k.footfall_p90 !== undefined ? formatNumber(k.footfall_p90) : undefined}
         sub="customers over the window"
       />
       <KpiRange
         label={k.net_profit_p50 < 0 ? "Projected net loss" : "Projected net profit"}
         value={formatCurrency(k.net_profit_p50, cur)}
-        low={formatCurrency(k.net_profit_p10, cur)}
-        high={formatCurrency(k.net_profit_p90, cur)}
+        low={hasInterval ? formatCurrency(k.net_profit_p10, cur) : undefined}
+        high={hasInterval ? formatCurrency(k.net_profit_p90, cur) : undefined}
         tone={k.net_profit_p50 < 0 ? "loss" : undefined}
         sub={
           delta
@@ -91,8 +96,8 @@ export function PlanKpis({ res }: { res: AutopilotResult }) {
         }
       />
       <KpiRange
-        label="Recommended workforce"
-        value={`${formatNumber(k.avg_staff_per_open_day ?? null, 1)} staff/day`}
+        label="Staff assignments per open day"
+        value={`${formatNumber(k.avg_staff_per_open_day ?? null, 1)} assignments`}
         sub={`${formatNumber(k.labor_hours)} h · ${formatCurrency(k.labor_cost, cur)} · peak ${k.peak_staff_per_shift}/shift`}
       />
     </div>
@@ -207,13 +212,14 @@ export function usePlanChartData(res: AutopilotResult) {
 
 export function RevenueCard({ res }: { res: AutopilotResult }) {
   const data = usePlanChartData(res);
+  const showBand = hasPlanInterval(res);
   return (
     <Card>
       <CardHeader>
         <CardTitle>Revenue forecast</CardTitle>
-        <CardDescription>P50 with the P10–P90 band{res.scenario_impact ? ", scenario baseline" : ""} and daily break-even</CardDescription>
+        <CardDescription>P50{showBand ? " with the P10–P90 band" : " (forecast interval unavailable)"}{res.scenario_impact ? ", scenario baseline" : ""} and daily break-even</CardDescription>
       </CardHeader>
-      <CardContent><RevenuePlanChart data={data} /></CardContent>
+      <CardContent><RevenuePlanChart data={data} showBand={showBand} /></CardContent>
     </Card>
   );
 }
@@ -302,10 +308,10 @@ export function PnlWaterfallCard({ res }: { res: AutopilotResult }) {
                 <TD className={cn("text-right tabular-nums", v < 0 && "text-destructive")}>{fmt(v)}</TD>
               </TR>
             ))}
-            <TR>
+            {hasPlanInterval(res) && <TR>
               <TD className="text-muted-foreground">Net profit P10 / P90</TD>
               <TD className="text-right tabular-nums text-muted-foreground">{fmt(t.net_profit_p10)} / {fmt(t.net_profit_p90)}</TD>
-            </TR>
+            </TR>}
             <TR>
               <TD className="text-muted-foreground">Break-even revenue · safety</TD>
               <TD className="text-right tabular-nums text-muted-foreground">{fmt(t.break_even_revenue ?? NaN)} · {formatPct(t.margin_of_safety_pct)}</TD>

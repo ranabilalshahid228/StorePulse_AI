@@ -15,7 +15,7 @@ import pandas as pd
 from app.core.config import get_settings
 from app.ml import plots
 from app.ml.data import load_history
-from app.ml.families import FAMILIES, ForecastModel, resolve_device, suggest_params
+from app.ml.families import FAMILIES, ARIMAModel, ForecastModel, resolve_device, suggest_params
 from app.ml.features import (
     LAG_STEPS,
     SERIES_KEYS,
@@ -42,6 +42,7 @@ class PreparedData:
         val_frame: pd.DataFrame,
         spec: FeatureSpec,
         val_scale: np.ndarray | None = None,
+        train_history: pd.DataFrame | None = None,
     ) -> None:
         self.X_tr, self.y_tr, self.X_val, self.y_val = X_tr, y_tr, X_val, y_val
         self.val_frame = val_frame
@@ -51,6 +52,7 @@ class PreparedData:
             val_frame["store_code"].astype(str) + "|" + val_frame["item_id"].astype(str)
         ).to_numpy()
         self.val_scale = val_scale
+        self.train_history = train_history
 
     def metrics(self, preds: np.ndarray) -> dict[str, Any]:
         return regression_metrics(self.y_val, preds, series=self.val_series, scale=self.val_scale)
@@ -102,6 +104,10 @@ def prepare_data(
     scales = series_scales(feats[feats["ds"] <= cutoff], SERIES_KEYS)
     val_idx = pd.MultiIndex.from_frame(val[SERIES_KEYS].astype(str))
     val_scale = scales.reindex(val_idx).to_numpy(dtype="float64")
+    train_history = full.loc[full["ds"] <= cutoff, [*SERIES_KEYS, "ds", "y"]]
+    if history_days:
+        start = feats["ds"].max() - pd.Timedelta(days=history_days)
+        train_history = train_history[train_history["ds"] > start]
     return PreparedData(
         tr[cols],
         tr["y"].to_numpy("float64"),
@@ -110,6 +116,7 @@ def prepare_data(
         val[["ds", "store_code", "item_id", "y"]].copy(),
         spec,
         val_scale=val_scale,
+        train_history=train_history,
     )
 
 
@@ -120,7 +127,8 @@ def inner_split(data: PreparedData, days: int) -> PreparedData:
     dates = pd.to_datetime(
         (X["year"].astype(int) * 1000 + X["dayofyear"].astype(int)).astype(str), format="%Y%j"
     )
-    val = (dates > dates.max() - pd.Timedelta(days=days)).to_numpy()
+    cutoff = dates.max() - pd.Timedelta(days=days)
+    val = (dates > cutoff).to_numpy()
     if val.sum() < 7 or (~val).sum() < 100:
         raise ValueError("Not enough training history for an inner tuning split")
     frame = pd.DataFrame(
@@ -131,7 +139,12 @@ def inner_split(data: PreparedData, days: int) -> PreparedData:
             "y": data.y_tr[val],
         }
     )
-    return PreparedData(X[~val], data.y_tr[~val], X[val], data.y_tr[val], frame, data.spec)
+    history = data.train_history
+    if history is not None:
+        history = history[history["ds"] <= cutoff]
+    return PreparedData(
+        X[~val], data.y_tr[~val], X[val], data.y_tr[val], frame, data.spec, train_history=history
+    )
 
 
 def _fit_once(
@@ -149,7 +162,10 @@ def _fit_once(
         if progress:
             progress.update(frac, "training", message=f"epoch {entry.get('epoch')}")
 
-    model.fit(data.X_tr, data.y_tr, data.X_val, data.y_val, on_epoch)
+    if isinstance(model, ARIMAModel):
+        model.fit(data.X_tr, data.y_tr, data.X_val, data.y_val, on_epoch, history=data.train_history)
+    else:
+        model.fit(data.X_tr, data.y_tr, data.X_val, data.y_val, on_epoch)
     preds = np.clip(model.predict(data.X_val), 0, None)
     return model, logs, preds
 

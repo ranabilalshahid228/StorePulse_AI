@@ -38,6 +38,8 @@ class DatasetStatus(StrEnum):
 
 class ModelFamily(StrEnum):
     SEASONAL_NAIVE = "seasonal_naive"
+    ARIMA = "arima"
+    SARIMA = "sarima"
     LIGHTGBM = "lightgbm"
     TORCH_MLP = "torch_mlp"
     TORCH_GRU = "torch_gru"

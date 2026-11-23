@@ -172,3 +172,13 @@ class ForecastPoint(BaseModel):
 class ForecastSeries(BaseModel):
     forecast_run_id: uuid.UUID
     points: list[ForecastPoint]
+
+
+class ForecastProduct(BaseModel):
+    item_id: str
+    forecast: float
+
+
+class ForecastProducts(BaseModel):
+    product_count: int
+    products: list[ForecastProduct]

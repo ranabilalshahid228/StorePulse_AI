@@ -13,6 +13,7 @@ import importlib.util
 import io
 import logging
 import time
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
@@ -22,7 +23,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from app.ml.features import FeatureSpec, closed_mask
+from app.ml.features import SERIES_KEYS, FeatureSpec, closed_mask
 from app.ml.metrics import QUANTILE_LEVELS, regression_metrics
 from app.models.enums import ModelFamily
 
@@ -137,6 +138,155 @@ class SeasonalNaiveModel(ForecastModel):
 
 
 # ----------------------------------------------------------------------------------------
+
+
+class ARIMAModel(ForecastModel):
+    family = ModelFamily.ARIMA
+    description = "CPU benchmark that fits an ARIMA model to each store/item's daily demand history."
+    default_params = {"p": 1, "d": 1, "q": 1}
+    search_space = {
+        "p": {"type": "int", "low": 0, "high": 2},
+        "d": {"type": "int", "low": 0, "high": 1},
+        "q": {"type": "int", "low": 0, "high": 2},
+    }
+
+    def __init__(self, spec: FeatureSpec, params: dict[str, Any] | None = None, device: str = "cpu") -> None:
+        super().__init__(spec, params, device)
+        for name, value in self.params.items():
+            lower, upper = (2, 31) if name == "season_length" else (0, 3)
+            if type(value) is not int or not lower <= value <= upper:
+                raise ValueError(f"{name} must be an integer between {lower} and {upper}")
+        self.order = tuple(self.params[k] for k in ("p", "d", "q"))
+        self.seasonal_order = (
+            tuple(self.params[k] for k in ("P", "D", "Q", "season_length"))
+            if "season_length" in self.params
+            else (0, 0, 0, 0)
+        )
+        if not any(self.seasonal_order[:3]):
+            self.seasonal_order = (0, 0, 0, 0)
+        # Per series: (training target, fitted coefficients). Full statsmodels results objects keep
+        # every filter matrix (~16 MB per SARIMA series), so the filter is rebuilt from these when
+        # predicting - same forecasts, a few KB per series.
+        self.results: dict[tuple[str, str], tuple[pd.Series, np.ndarray]] = {}
+        self.weekday_profiles: dict[tuple[str, str], np.ndarray] = {}
+
+    def fit(
+        self,
+        X: pd.DataFrame,
+        y: np.ndarray,
+        X_val: pd.DataFrame,
+        y_val: np.ndarray,
+        on_epoch: EpochCallback,
+        *,
+        history: pd.DataFrame | None = None,
+    ) -> None:
+        from statsmodels.tools.sm_exceptions import ConvergenceWarning
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+        if history is None:
+            raise ValueError("ARIMA and SARIMA must run as standalone benchmarks with daily history")
+        groups = history.groupby(SERIES_KEYS, sort=False)
+        n_series = groups.ngroups
+        self.results.clear()
+        self.weekday_profiles.clear()
+        min_observations = max(14, 3 * self.seasonal_order[-1])
+        for i, (key, series) in enumerate(groups, start=1):
+            target = series.set_index("ds")["y"].asfreq("D")
+            self.weekday_profiles[key] = self._weekday_profile(target)
+            if target.count() >= min_observations:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                        result = SARIMAX(target, order=self.order, seasonal_order=self.seasonal_order).fit(
+                            disp=False
+                        )
+                    if result.mle_retvals["converged"] and np.isfinite(result.params).all():
+                        self.results[key] = (target.astype("float64"), np.asarray(result.params, float))
+                except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+                    logger.debug("Could not fit %s for series %s", self.family, key, exc_info=True)
+            if i % 25 == 0 and i < n_series:
+                on_epoch({"epoch": i, "fitted_series": len(self.results)}, i / n_series)
+
+        if not self.results:
+            raise ValueError(f"{self.family} could not fit any series. Use more history or a simpler order.")
+        metrics = regression_metrics(y_val, self.predict(X_val))
+        on_epoch(
+            {
+                "epoch": n_series,
+                "fitted_series": len(self.results),
+                "fallback_series": n_series - len(self.results),
+                **{f"val_{k}": v for k, v in metrics.items()},
+            },
+            1.0,
+        )
+
+    def _filtered(self, target: pd.Series, params: np.ndarray) -> Any:
+        """Kalman-filter `target` with fixed coefficients (no re-estimation)."""
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = SARIMAX(target, order=self.order, seasonal_order=self.seasonal_order)
+            return model.filter(params)
+
+    @staticmethod
+    def _weekday_profile(target: pd.Series) -> np.ndarray:
+        recent = target.tail(28)
+        return recent.groupby(recent.index.dayofweek).mean().reindex(range(7)).fillna(0).to_numpy()
+
+    def _predict_dates(
+        self, X: pd.DataFrame, dates: pd.DatetimeIndex, history: pd.DataFrame | None
+    ) -> np.ndarray:
+        predictions = np.zeros(len(X))
+        history_groups = history.groupby(SERIES_KEYS, sort=False) if history is not None else None
+        for key, rows in X.groupby(SERIES_KEYS, sort=False, observed=True).indices.items():
+            target = None
+            profile = self.weekday_profiles.get(key)
+            if history_groups is not None and key in history_groups.indices:
+                target = history_groups.get_group(key).set_index("ds")["y"].asfreq("D")
+                profile = self._weekday_profile(target)
+            if profile is not None:
+                predictions[rows] = profile[dates[rows].dayofweek]
+            fitted = self.results.get(key)
+            if fitted is None:
+                continue
+            train_target, params = fitted
+            # With history, condition on the latest actuals; otherwise forecast from the training end.
+            series = target if target is not None else train_target
+            origin = series.index[-1]
+            try:
+                result = self._filtered(series, params)
+            except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+                logger.debug("Could not filter %s for series %s", self.family, key, exc_info=True)
+                continue
+            steps = (dates[rows] - origin).days.to_numpy()
+            valid = steps > 0
+            if valid.any():
+                values = np.asarray(result.forecast(steps=int(steps[valid].max())))[steps[valid] - 1]
+                finite = np.isfinite(values)
+                predictions[rows[valid][finite]] = np.clip(values[finite], 0, None)
+        return np.clip(predictions, 0, None)
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        dates = pd.to_datetime(X["year"].astype(int) * 1000 + X["dayofyear"].astype(int), format="%Y%j")
+        return self._predict_dates(X, pd.DatetimeIndex(dates), history=None)
+
+    def predict_from_history(
+        self, X: pd.DataFrame, dates: pd.DatetimeIndex, history: pd.DataFrame
+    ) -> np.ndarray:
+        predictions = self._predict_dates(X, dates, history)
+        closed = closed_mask(self.spec, X)
+        return np.where(closed, 0.0, predictions) if closed is not None else predictions
+
+
+class SARIMAModel(ARIMAModel):
+    family = ModelFamily.SARIMA
+    description = "CPU benchmark with a weekly seasonal component for each store/item's daily demand."
+    default_params = {**ARIMAModel.default_params, "P": 1, "D": 0, "Q": 0, "season_length": 7}
+    search_space = {
+        **ARIMAModel.search_space,
+        **{name: {"type": "int", "low": 0, "high": 1} for name in ("P", "D", "Q")},
+    }
 
 
 class LightGBMModel(ForecastModel):
@@ -801,6 +951,8 @@ class EnsembleModel(ForecastModel):
 
 FAMILIES: dict[ModelFamily, type[ForecastModel]] = {
     ModelFamily.SEASONAL_NAIVE: SeasonalNaiveModel,
+    ModelFamily.ARIMA: ARIMAModel,
+    ModelFamily.SARIMA: SARIMAModel,
     ModelFamily.LIGHTGBM: LightGBMModel,
     ModelFamily.TORCH_MLP: TorchMLPModel,
     ModelFamily.TORCH_GRU: TorchGRUModel,

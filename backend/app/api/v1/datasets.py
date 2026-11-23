@@ -153,9 +153,7 @@ async def confirm_mapping(
     ds.progress_pct = 0.0
     ds.error = None
     await db.commit()
-    task_id = dispatch.enqueue(dispatch.TASK_INGEST, ds.id, dispatch.QUEUE_INGEST)
-    ds.celery_task_id = task_id
-    await db.commit()
+    task_id = await dispatch.enqueue_job(db, ds, dispatch.TASK_INGEST, dispatch.QUEUE_INGEST)
     return JobAccepted(id=ds.id, status=ds.status, celery_task_id=task_id)
 
 

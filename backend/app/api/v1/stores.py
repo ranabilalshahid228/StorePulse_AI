@@ -157,6 +157,9 @@ async def upsert_financial_config(
     store_id: uuid.UUID, body: FinancialStaffingConfigIn, principal: AnalystPrincipal, db: DbSession
 ) -> FinancialStaffingConfig:
     await get_owned(db, Store, store_id, principal.organization_id)
+    cap = body.autopilot_settings.max_staff_per_shift
+    if cap is not None and cap < body.min_staff_per_shift:
+        raise DomainValidationError("Maximum staff per shift must be at least the minimum staff per shift")
     cfg = (
         await db.execute(select(FinancialStaffingConfig).where(FinancialStaffingConfig.store_id == store_id))
     ).scalar_one_or_none()

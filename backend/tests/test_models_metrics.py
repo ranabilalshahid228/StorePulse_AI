@@ -10,8 +10,9 @@ import pytest
 
 from app.ml.families import FAMILIES, ForecastModel, is_intermittent
 from app.ml.features import FeatureSpec, build_features, complete_calendar
+from app.ml.forecasting import run_forecast
 from app.ml.metrics import interval_metrics, pinball_loss, regression_metrics, series_scales
-from app.ml.training import PreparedData
+from app.ml.training import PreparedData, _fit_once, evaluate_model, prepare_data
 from app.models.enums import ModelFamily
 
 TORCH = FAMILIES[ModelFamily.TORCH_MLP].is_available()
@@ -147,6 +148,63 @@ def prepared() -> PreparedData:
         spec,
         val_scale=np.ones(len(val)),
     )
+
+
+@pytest.mark.parametrize("family", [ModelFamily.ARIMA, ModelFamily.SARIMA])
+def test_statistical_benchmark_roundtrip(family: ModelFamily, tmp_path: Path, progress) -> None:
+    rng = np.random.default_rng(42)
+    days = pd.date_range("2021-01-01", periods=160)
+    weekly = 8 * np.sin(2 * np.pi * np.arange(len(days)) / 7)
+    history = pd.DataFrame(
+        {
+            "ds": days,
+            "store_code": "S",
+            "item_id": "A",
+            "y": 50 + np.cumsum(rng.normal(size=len(days))) + weekly,
+            "open": 1.0,
+        }
+    )
+    history.loc[100, "y"] = np.nan
+    history.loc[140, ["open", "y"]] = 0.0
+    path = tmp_path / "history.parquet"
+    history.to_parquet(path)
+    mapping = {"known_future_columns": ["open"], "open_column": "open"}
+    data = prepare_data(path, mapping, horizon=7, validation_days=21, store_code=None)
+    model, logs, predictions = _fit_once(family, data, {}, "cpu", progress)
+    assert logs[-1]["fitted_series"] == 1
+    assert np.isfinite(predictions).all()
+    assert predictions[data.X_val["open"].to_numpy() == 0].tolist() == [0.0]
+
+    # Changing observed holdout values leaves the fixed-origin benchmark predictions unchanged.
+    changed = history.copy()
+    changed.loc[changed["ds"] >= data.val_frame["ds"].min(), "y"] += 100
+    changed_path = tmp_path / "changed.parquet"
+    changed.to_parquet(changed_path)
+    changed_data = prepare_data(changed_path, mapping, horizon=7, validation_days=21, store_code=None)
+    _, _, changed_predictions = _fit_once(family, changed_data, {}, "cpu", progress)
+    np.testing.assert_allclose(changed_predictions, predictions)
+
+    checkpoint = tmp_path / "benchmark.pkl"
+    model.save(checkpoint)
+    # Only coefficients + the series are stored, not statsmodels' filter matrices (MBs per series).
+    assert checkpoint.stat().st_size < 100_000
+    loaded = ForecastModel.load(checkpoint)
+    np.testing.assert_allclose(loaded.predict(data.X_val), predictions)
+    forecast, _ = run_forecast(
+        model=loaded,
+        metrics=evaluate_model(model, data, predictions),
+        parquet_path=path,
+        store_code=None,
+        horizon=7,
+        covariate_defaults={"open": 1.0},
+        events=[],
+        compare_to_baseline=False,
+        promo_column=None,
+        open_column="open",
+        progress=progress,
+    )
+    assert len(forecast) == 7
+    assert (forecast["yhat"] > 0).all()
 
 
 def test_lightgbm_auto_tweedie_and_quantiles(prepared: PreparedData, tmp_path: Path) -> None:

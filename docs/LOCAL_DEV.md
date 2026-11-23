@@ -100,3 +100,11 @@ Everything above lives under `D:\StorePulse_AI` (`backend\.venv`, `frontend\node
 `outputs\`). `local_stack clean --all` plus deleting `backend\.venv`, `frontend\node_modules` and
 `frontend\.next` returns the repo to a fresh clone. The only things on `C:` are the Python / Node / Git
 installs you already had.
+
+## Check a connection error
+
+With the stack running, open a second terminal in `backend/` and run
+`.venv\Scripts\python.exe -m scripts.local_stack doctor`.
+The command checks backend readiness, whether the product forecast route is registered, and whether
+the UI can reach the API through its local proxy. When a check fails, look at the first error in the
+startup window or `.local/logs/api.log`.

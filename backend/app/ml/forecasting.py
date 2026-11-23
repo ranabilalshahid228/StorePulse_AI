@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from app.ml.data import load_history
-from app.ml.families import ForecastModel
+from app.ml.families import ARIMAModel, ForecastModel
 from app.ml.features import LAG_STEPS, SERIES_KEYS, build_features, complete_calendar, future_frame
 from app.workers.progress import ProgressReporter
 
@@ -49,6 +49,9 @@ def _apply_events(
 def _predict(
     model: ForecastModel, history: pd.DataFrame, future: pd.DataFrame
 ) -> tuple[np.ndarray, dict[float, np.ndarray] | None]:
+    if isinstance(model, ARIMAModel):
+        return model.predict_from_history(future, pd.DatetimeIndex(future["ds"]), history), None
+
     spec = model.spec
     # Tag future rows with their position so predictions map back without a (dtype-unsafe) merge.
     hist = history.assign(_row=-1)

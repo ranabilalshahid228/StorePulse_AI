@@ -18,6 +18,7 @@ PostgreSQL 16 comes from the `pgserver` wheel's bundled binaries inside backend/
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import shutil
@@ -27,6 +28,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import ProxyHandler, build_opener
 
 BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
@@ -76,7 +79,8 @@ def lean_env() -> dict[str, str]:
             "STORAGE_LOCAL_ROOT": str(LOCAL / "storage"),
             "STORAGE_CACHE_DIR": str(LOCAL / "storage" / ".cache"),
             "CORS_ORIGINS": f"http://localhost:{UI_PORT},http://127.0.0.1:{UI_PORT}",
-            "NEXT_PUBLIC_API_URL": f"http://localhost:{API_PORT}/api/v1",
+            "NEXT_PUBLIC_API_URL": "/api/v1",
+            "STOREPULSE_LOCAL_API_ORIGIN": f"http://127.0.0.1:{API_PORT}",
             "NEXT_TELEMETRY_DISABLED": "1",
             "TEMP": str(LOCAL / "tmp"),
             "TMP": str(LOCAL / "tmp"),
@@ -232,7 +236,8 @@ def up(args: argparse.Namespace) -> None:
         )
     if not args.no_ui:
         npm = "npm.cmd" if IS_WIN else "npm"
-        specs.append(("ui", [npm, "run", "dev", "--", "--port", str(UI_PORT)], ROOT / "frontend"))
+        command = [npm, "run", "dev", "--", "--hostname", "127.0.0.1", "--port", str(UI_PORT)]
+        specs.append(("ui", command, ROOT / "frontend"))
     for name, cmd, cwd in specs:
         proc = subprocess.Popen(
             cmd,
@@ -280,6 +285,7 @@ def print_env() -> None:
         "STORAGE_CACHE_DIR",
         "CORS_ORIGINS",
         "NEXT_PUBLIC_API_URL",
+        "STOREPULSE_LOCAL_API_ORIGIN",
         "TEMP",
         "TMP",
         "PIP_CACHE_DIR",
@@ -305,6 +311,33 @@ def clean(all_: bool) -> None:
         print(f"removed {p}")
 
 
+def doctor() -> int:
+    """Check the direct API, required forecast route, and browser-facing proxy."""
+    client = build_opener(ProxyHandler({}))
+    failed = False
+    checks = (
+        ("API health", f"http://127.0.0.1:{API_PORT}/api/v1/health/ready"),
+        ("Forecast routes", f"http://127.0.0.1:{API_PORT}/api/v1/openapi.json"),
+        ("Browser API", f"http://127.0.0.1:{UI_PORT}/api/v1/health/ready"),
+    )
+    for label, url in checks:
+        try:
+            with client.open(url, timeout=12) as response:
+                payload = json.load(response)
+            if label == "Forecast routes":
+                if "/api/v1/forecasts/{forecast_id}/products" not in payload.get("paths", {}):
+                    raise ValueError("Product forecast route is missing")
+            elif payload.get("status") != "ok":
+                raise ValueError(f"API status: {payload.get('status')}")
+            print(f"[ok] {label}")
+        except (URLError, ValueError, TimeoutError) as exc:
+            print(f"[failed] {label}: {exc}")
+            failed = True
+    if failed:
+        print(f"Check the startup terminal and {LOGS / 'api.log'}")
+    return int(failed)
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)  # progress visible when output is redirected
@@ -316,6 +349,7 @@ def main() -> int:
     u.add_argument("--keep-db", action="store_true", help="leave PostgreSQL running after Ctrl+C")
     d = sub.add_parser("db", help="PostgreSQL only")
     d.add_argument("action", choices=["start", "stop", "status", "psql"])
+    sub.add_parser("doctor", help="check API health, product forecasts and the frontend API route")
     sub.add_parser("migrate", help="start db and run alembic upgrade head")
     sub.add_parser("env", help="print PowerShell env lines for running pieces by hand")
     c = sub.add_parser("clean", help="delete temp/logs (--all: also db, uploads, caches)")
@@ -340,6 +374,8 @@ def main() -> int:
     elif args.cmd == "migrate":
         db_start()
         migrate()
+    elif args.cmd == "doctor":
+        return doctor()
     elif args.cmd == "env":
         print_env()
     else:

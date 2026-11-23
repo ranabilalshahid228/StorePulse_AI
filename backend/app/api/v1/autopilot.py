@@ -18,6 +18,7 @@ from app.models.enums import JobStatus, TargetType
 from app.schemas.autopilot import AutopilotRequest, AutopilotRunDetail, AutopilotRunRead
 from app.schemas.common import JobAccepted, Page, PageParams
 from app.services import autopilot_report
+from app.services.autopilot import resolve_window
 from app.services.tenancy import get_owned, paginate, scoped
 from app.workers import dispatch
 
@@ -46,6 +47,18 @@ async def create_autopilot_run(
         raise PreconditionFailedError(
             "Set the store's financial & staffing config before running the Autopilot"
         )
+    cap = (cfg.autopilot_settings or {}).get("max_staff_per_shift")
+    if cap is not None and cap < cfg.min_staff_per_shift:
+        raise DomainValidationError("In Stores, set maximum staff per shift to at least the minimum")
+    if dataset.date_max is not None:
+        window = resolve_window(
+            body.horizon, dataset.date_max, run.horizon_days, body.start_date, body.end_date
+        )
+        for lever in body.scenario.levers:
+            if lever.start_date < window.start or lever.end_date > window.end:
+                raise DomainValidationError(
+                    f"{lever.name} must be within the plan dates ({window.start} to {window.end})"
+                )
     mapping = dataset.schema_mapping or {}
     if (
         store.target_type == TargetType.SALES
@@ -83,8 +96,7 @@ async def create_autopilot_run(
     )
     db.add(ap)
     await db.commit()
-    ap.celery_task_id = dispatch.enqueue(dispatch.TASK_AUTOPILOT, ap.id, dispatch.QUEUE_FORECAST)
-    await db.commit()
+    await dispatch.enqueue_job(db, ap, dispatch.TASK_AUTOPILOT, dispatch.QUEUE_FORECAST)
     return JobAccepted(id=ap.id, status=ap.status, celery_task_id=ap.celery_task_id)
 
 

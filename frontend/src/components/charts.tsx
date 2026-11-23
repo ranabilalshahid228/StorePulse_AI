@@ -81,7 +81,7 @@ export function ForecastBandChart({ data, height = 300 }: { data: object[]; heig
 }
 
 /** Autopilot revenue: P10–P90 band, P50, scenario baseline and break-even revenue. */
-export function RevenuePlanChart({ data, height = 300 }: { data: object[]; height?: number }) {
+export function RevenuePlanChart({ data, height = 300, showBand }: { data: object[]; height?: number; showBand: boolean }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -90,7 +90,7 @@ export function RevenuePlanChart({ data, height = 300 }: { data: object[]; heigh
         <YAxis tick={axis} tickLine={false} axisLine={false} tickFormatter={formatCompact} width={48} />
         <Tooltip {...tooltipStyle} />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        <Area dataKey="band" name="P10–P90" stroke="none" fill="var(--chart-1)" fillOpacity={0.15} />
+        {showBand && <Area dataKey="band" name="P10–P90" stroke="none" fill="var(--chart-1)" fillOpacity={0.15} />}
         <Line dataKey="revenue_p50" name="Revenue P50" stroke="var(--chart-1)" strokeWidth={2} dot={false} />
         <Line dataKey="baseline_revenue_p50" name="Baseline" stroke="var(--chart-5)" strokeDasharray="4 3" dot={false} connectNulls />
         <Line dataKey="break_even_revenue" name="Break-even" stroke="var(--chart-4)" strokeDasharray="2 3" strokeWidth={1.4} dot={false} />

@@ -251,7 +251,7 @@ def main() -> int:
     ap.add_argument(
         "--families",
         nargs="*",
-        default=[f.value for f in ModelFamily],
+        default=[f.value for f in ModelFamily if f not in (ModelFamily.ARIMA, ModelFamily.SARIMA)],
         choices=[f.value for f in ModelFamily],
     )
     ap.add_argument("--horizon", type=int)

@@ -56,7 +56,10 @@ async function raw(path: string, init: RequestInit = {}, retry = true): Promise<
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers }).catch((error: unknown) => {
+    if (!(error instanceof TypeError)) throw error;
+    throw new ApiError(0, "api_unreachable", "Cannot reach the StorePulse API. Check that the app server is running.");
+  });
   if (res.status === 401 && retry && (await tryRefresh())) return raw(path, init, false);
   if (!res.ok) {
     let body: ApiErrorBody | null = null;
@@ -71,10 +74,10 @@ async function raw(path: string, init: RequestInit = {}, retry = true): Promise<
     }
     throw new ApiError(
       res.status,
-      body?.error.code ?? "http_error",
-      body?.error.message ?? res.statusText,
-      body?.error.details,
-      body?.error.request_id,
+      body?.error?.code ?? "http_error",
+      body?.error?.message ?? (res.status >= 500 ? "The StorePulse server is unavailable. Try again shortly." : res.statusText),
+      body?.error?.details,
+      body?.error?.request_id,
     );
   }
   return res;

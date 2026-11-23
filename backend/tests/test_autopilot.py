@@ -36,6 +36,25 @@ FIN = FinanceInputs(
 COLS = ap.CovariateColumns(["Open", "Promo", "SchoolHoliday"], ["StateHoliday"], "Promo", "Open")
 
 
+def test_missing_forecast_intervals_stay_missing_during_aggregation() -> None:
+    forecast = pd.DataFrame(
+        {
+            "ds": pd.to_datetime(["2025-01-01"] * 2 + ["2025-01-02"] * 2),
+            "yhat": [20.0, 30.0, 20.0, 30.0],
+            "yhat_lower": [np.nan, np.nan, 0.0, 0.0],
+            "yhat_upper": [np.nan, 40.0, 25.0, 40.0],
+            "yhat_p50": [np.nan] * 4,
+            "is_open": [True] * 4,
+            "is_promo": [False] * 4,
+        }
+    )
+    daily = ap.store_days(forecast, COLS)
+    assert pd.isna(daily.loc[0, "yhat_lower"])
+    assert pd.isna(daily.loc[0, "yhat_upper"])
+    assert daily.loc[1, "yhat_lower"] == 0
+    assert daily.loc[1, "yhat_upper"] == 65
+
+
 # --- window ------------------------------------------------------------------------------
 
 

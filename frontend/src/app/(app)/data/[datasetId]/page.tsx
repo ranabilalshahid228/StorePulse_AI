@@ -39,12 +39,47 @@ export default function DatasetPage({ params }: { params: Promise<{ datasetId: s
       ) : null}
       {ds.role === "primary" && ds.status === "ready" ? (
         <>
+          <MappedPreview datasetId={ds.id} />
           <HealthAndEda datasetId={ds.id} />
           <EdaStudio datasetId={ds.id} />
         </>
       ) : null}
       <ColumnProfileCard columns={ds.column_profile.columns ?? []} />
     </>
+  );
+}
+
+function MappedPreview({ datasetId }: { datasetId: string }) {
+  const preview = useQuery({
+    queryKey: ["mapped-preview", datasetId],
+    queryFn: () => api.get<{ columns: string[]; rows: Record<string, unknown>[] }>(
+      `/datasets/${datasetId}/preview?limit=8`,
+    ),
+  });
+  const columns = ["ds", "store_code", "item_id", "y", "customers"].filter(
+    (column) => preview.data?.columns.includes(column),
+  );
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Mapped sales preview</CardTitle>
+        <CardDescription>Check the dates, store codes, and sales totals before training.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ErrorNotice error={preview.error} />
+        {preview.isLoading && <Skeleton className="h-20" />}
+        {preview.data && (
+          <Table>
+            <THead><tr>{columns.map((column) => <TH key={column}>{column}</TH>)}</tr></THead>
+            <tbody>{preview.data.rows.map((row, index) => (
+              <TR key={index}>{columns.map((column) => (
+                <TD key={column}>{row[column] == null ? "—" : String(row[column])}</TD>
+              ))}</TR>
+            ))}</tbody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
+from pathlib import Path
 
 import pandas as pd
 import pyarrow.dataset as pads
@@ -16,6 +18,8 @@ from app.schemas.common import JobAccepted, Page, PageParams
 from app.schemas.runs import (
     EventForecastRequest,
     ForecastPoint,
+    ForecastProduct,
+    ForecastProducts,
     ForecastRequest,
     ForecastRunRead,
     ForecastSeries,
@@ -75,8 +79,7 @@ async def _submit(
     )
     db.add(fr)
     await db.commit()
-    fr.celery_task_id = dispatch.enqueue(dispatch.TASK_FORECAST, fr.id, dispatch.QUEUE_FORECAST)
-    await db.commit()
+    await dispatch.enqueue_job(db, fr, dispatch.TASK_FORECAST, dispatch.QUEUE_FORECAST)
     return JobAccepted(id=fr.id, status=fr.status, celery_task_id=fr.celery_task_id)
 
 
@@ -169,3 +172,33 @@ async def forecast_series(
         ].to_dict(orient="records")
     ]
     return ForecastSeries(forecast_run_id=fr.id, points=points)
+
+
+def rank_products(path: Path) -> ForecastProducts:
+    """Aggregate by product locally and send only the top results to the browser."""
+    totals: dict[str, float] = defaultdict(float)
+    dataset = pads.dataset(path, format="parquet")
+    if "item_id" not in dataset.schema.names:
+        return ForecastProducts(product_count=0, products=[])
+    for batch in dataset.to_batches(columns=["item_id", "yhat"]):
+        frame = batch.to_pandas()
+        groups = frame.loc[frame["item_id"].notna() & frame["item_id"].ne("")].groupby("item_id")
+        for item, demand in groups["yhat"].sum().items():
+            totals[str(item)] += float(demand)
+    leaders = sorted(totals.items(), key=lambda pair: (-pair[1], pair[0]))[:10]
+    return ForecastProducts(
+        product_count=len(totals),
+        products=[ForecastProduct(item_id=item, forecast=demand) for item, demand in leaders],
+    )
+
+
+@router.get("/{forecast_id}/products", response_model=ForecastProducts)
+async def forecast_products(
+    forecast_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession
+) -> ForecastProducts:
+    fr = await get_owned(db, ForecastRun, forecast_id, principal.organization_id)
+    if fr.status != JobStatus.SUCCEEDED or not fr.output_path:
+        raise PreconditionFailedError("Forecast has not finished", details={"status": fr.status})
+    storage = get_storage()
+    path = await run_in_threadpool(storage.local_path, fr.output_path)
+    return await run_in_threadpool(rank_products, path)

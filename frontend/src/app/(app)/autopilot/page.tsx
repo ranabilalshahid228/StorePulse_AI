@@ -196,6 +196,7 @@ export default function AutopilotDashboard() {
         : null;
   const maxDate = dataEnd && model ? addDays(dataEnd, model.horizon_days) : undefined;
 
+  const exceedsWindow = Boolean(window && maxDate && window.end > maxDate);
   const create = useMutation({
     mutationFn: (body: AutopilotRequest) => api.post<{ id: string }>("/autopilot/runs", body),
     onSuccess: (r) => {
@@ -309,7 +310,7 @@ export default function AutopilotDashboard() {
             </>
           ) : null}
           <div className="ml-auto flex flex-col items-end gap-1">
-            <Button onClick={run} disabled={create.isPending || !model || !store?.has_financial_config || (horizon === "custom" && !window)}>
+            <Button onClick={run} disabled={create.isPending || !model || !store?.has_financial_config || exceedsWindow || (horizon === "custom" && !window)}>
               <Rocket /> {create.isPending ? "Queuing…" : simChanges.length ? "Simulate scenario" : "Run plan"}
             </Button>
             <span className="text-[11px] text-muted-foreground">
@@ -325,7 +326,17 @@ export default function AutopilotDashboard() {
           This store has no financial & staffing configuration yet — set it on the&nbsp;<Link className="underline" href="/stores">Stores</Link>&nbsp;page.
         </p>
       ) : null}
+      {exceedsWindow && (
+        <p role="alert" className="mb-4 text-sm text-destructive">
+          This model supports plans through {maxDate}. Choose a shorter window or train a longer-horizon model.
+        </p>
+      )}
       <ErrorNotice error={create.error} />
+      {create.isError && runId && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          The new scenario was rejected. The saved plan below uses its original settings.
+        </p>
+      )}
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[22rem_1fr]">
         <div className="flex flex-col gap-6">
@@ -431,13 +442,13 @@ function SimulatorCard({
             <Input type="number" step="0.5" min={0} max={100} placeholder={cfgMargin !== null ? String(cfgMargin) : ""} value={sim.marginPct} onChange={(e) => set({ marginPct: e.target.value })} />
           </Field>
           <Field label="Hourly wage" hint={config ? `config ${config.hourly_wage}` : undefined}>
-            <Input type="number" step="0.5" min={0} placeholder={config?.hourly_wage ?? ""} value={sim.hourlyWage} onChange={(e) => set({ hourlyWage: e.target.value })} />
+            <Input type="number" step="0.5" min={0} max={1000} placeholder={config?.hourly_wage ?? ""} value={sim.hourlyWage} onChange={(e) => set({ hourlyWage: e.target.value })} />
           </Field>
           <Field label="Price change %">
-            <Input type="number" step="0.5" value={sim.priceChangePct} onChange={(e) => set({ priceChangePct: e.target.value })} />
+            <Input type="number" step="0.5" min={-99.5} max={300} value={sim.priceChangePct} onChange={(e) => set({ priceChangePct: e.target.value })} />
           </Field>
           <Field label="Price elasticity" hint="blank = volume unchanged">
-            <Input type="number" step="0.1" max={0} placeholder="-1.2" value={sim.elasticity} onChange={(e) => set({ elasticity: e.target.value })} />
+            <Input type="number" step="0.1" min={-10} max={0} placeholder="-1.2" value={sim.elasticity} onChange={(e) => set({ elasticity: e.target.value })} />
           </Field>
         </div>
         {features.has("Promo") ? (
@@ -580,6 +591,12 @@ function RunDetail({ id, datasetId }: { id: string; datasetId?: string }) {
         </div>
         <ExportButtons runId={id} res={res} />
       </div>
+      {res.kpis.understaffed_shifts > 0 && (
+        <p role="status" className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+          Staffing plan cannot meet forecast demand within the configured capacity.
+          Projected profit assumes the store can still serve all forecast demand.
+        </p>
+      )}
       <PlanKpis res={res} />
       <AlertBanners res={res} health={health.data?.report} />
       <RecommendationsFeed res={res} />

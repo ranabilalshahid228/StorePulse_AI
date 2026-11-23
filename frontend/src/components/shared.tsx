@@ -32,12 +32,26 @@ export function ErrorNotice({ error }: { error: unknown }) {
   if (!error) return null;
   const msg = error instanceof ApiError ? error.message : error instanceof Error ? error.message : String(error);
   const code = error instanceof ApiError ? error.code : null;
+  const details = error instanceof ApiError ? error.details as {
+    errors?: { loc: (string | number)[]; msg: string }[];
+  } | undefined : undefined;
+  const issues = Array.isArray(details?.errors) ? details.errors : [];
   return (
-    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+    <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
       <AlertTriangle className="mt-0.5 size-4 shrink-0" />
       <div>
         <p>{msg}</p>
-        {code ? <p className="text-xs opacity-70">{code}</p> : null}
+        {issues.length > 0 && (
+          <ul className="mt-1 list-disc pl-4">
+            {issues.map(({ loc, msg }, index) => {
+              const field = loc.filter((part) => part !== "body" && part !== "scenario")
+                .map((part) => typeof part === "number" ? String(part + 1) : part.replaceAll("_", " "))
+                .join(" / ");
+              return <li key={index}>{field ? `${field} · ` : ""}{msg.replace(/^Value error, /, "")}</li>;
+            })}
+          </ul>
+        )}
+        {code && !issues.length ? <p className="text-xs opacity-70">{code}</p> : null}
       </div>
     </div>
   );

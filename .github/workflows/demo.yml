@@ -1,0 +1,36 @@
+name: Tests and demo workflow
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e "./backend[dev]"
+      - run: python -m pytest -q backend/tests
+      - name: Start the integration stack
+        run: |
+          cp .env.example .env
+          printf '\nJWT_SECRET_KEY=%s\n' "$(python -c 'import secrets; print(secrets.token_hex(32))')" >> .env
+          docker compose up --build --wait --wait-timeout 180
+      - name: Verify customer workflow and workspace isolation
+        working-directory: backend
+        run: python -m scripts.smoke_local --synthetic --stores 1 2 3 --rounds 60
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+      - name: Stop the integration stack
+        if: always()
+        run: docker compose down

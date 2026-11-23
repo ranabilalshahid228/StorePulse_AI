@@ -121,7 +121,7 @@ function LaunchForm({ datasetId }: { datasetId: string }) {
               <Select name="family" value={family} onChange={(e) => setFamily(e.target.value)}>
                 {families.data?.map((f) => (
                   <option key={f.family} value={f.family} disabled={!f.available}>
-                    {f.family}{f.supports_gpu ? " (GPU)" : ""}{f.available ? "" : " — not installed"}
+                    {f.family === "arima" || f.family === "sarima" ? f.family.toUpperCase() : f.family}{f.supports_gpu ? " (GPU)" : ""}{f.available ? "" : " — not installed"}
                   </option>
                 ))}
               </Select>

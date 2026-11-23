@@ -7,7 +7,7 @@ import { useAutopilotRun, useAutopilotRuns, useStores } from "@/hooks/queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, Field, Select, Skeleton } from "@/components/ui/primitives";
 import { EmptyState, ErrorNotice, JobProgress, PageHeader } from "@/components/shared";
-import { AssumptionsCard, ExportButtons, PnlWaterfallCard, ProfitCard, ShiftRoster, StaffingCard } from "@/components/autopilot";
+import { hasPlanInterval, AssumptionsCard, ExportButtons, PnlWaterfallCard, ProfitCard, ShiftRoster, StaffingCard } from "@/components/autopilot";
 import { ForecastPnl } from "@/components/forecast-pnl";
 import { cn, formatCurrency, formatNumber } from "@/lib/utils";
 
@@ -105,8 +105,8 @@ function PlanView({ res }: { res: AutopilotResult }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Net revenue P50" value={formatCurrency(k.revenue_p50, cur)} sub={`P10 ${formatCurrency(k.revenue_p10, cur)} · P90 ${formatCurrency(k.revenue_p90, cur)}`} />
-        <Stat label="Net profit P50" value={formatCurrency(k.net_profit_p50, cur)} sub={`P10 ${formatCurrency(k.net_profit_p10, cur)} · P90 ${formatCurrency(k.net_profit_p90, cur)}`} loss={k.net_profit_p50 < 0} />
+        <Stat label="Net revenue P50" value={formatCurrency(k.revenue_p50, cur)} sub={hasPlanInterval(res) ? `P10 ${formatCurrency(k.revenue_p10, cur)} · P90 ${formatCurrency(k.revenue_p90, cur)}` : "Forecast interval unavailable"} />
+        <Stat label="Net profit P50" value={formatCurrency(k.net_profit_p50, cur)} sub={hasPlanInterval(res) ? `P10 ${formatCurrency(k.net_profit_p10, cur)} · P90 ${formatCurrency(k.net_profit_p90, cur)}` : "Forecast interval unavailable"} loss={k.net_profit_p50 < 0} />
         <Stat label="Labour" value={formatCurrency(k.labor_cost, cur)} sub={`${formatNumber(k.labor_hours)} scheduled hours`} />
         <Stat label="Staffing flags" value={`${k.understaffed_shifts} under / ${k.overstaffed_shifts} over`} sub={`peak ${k.peak_staff_per_shift} staff per shift`} />
       </div>

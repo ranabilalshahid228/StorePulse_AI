@@ -80,6 +80,7 @@ export default function StoresPage() {
 }
 
 function ConfigForm({ store }: { store: Store }) {
+  const [review, setReview] = useState<string[]>([]);
   const qc = useQueryClient();
   const cfg = useQuery({
     queryKey: ["fin-config", store.id],
@@ -129,7 +130,21 @@ function ConfigForm({ store }: { store: Store }) {
         <CardDescription>Target: {store.target_type} · Currency: {store.currency}</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={onSubmit} className="grid gap-4 md:grid-cols-2">
+        <form
+          onSubmit={onSubmit}
+          onChange={(event) => {
+            const data = new FormData(event.currentTarget);
+            const notes: string[] = [];
+            const hours = Number(data.get("operating_hours_per_day"));
+            const wage = data.get("hourly_wage");
+            const cogs = data.get("cogs_pct");
+            if (hours > 0 && hours < 1) notes.push("Operating hours are in hours. 0.25 means 15 minutes.");
+            if (wage !== "" && Number(wage) < 1) notes.push(`Check hourly wage. It is below 1 ${store.currency}.`);
+            if (cogs !== "" && Number(cogs) < 0.01) notes.push("Check COGS share. 0.55 means 55% of list-price revenue.");
+            setReview(notes);
+          }}
+          className="grid gap-4 md:grid-cols-2"
+        >
           {FIELDS.map((fd) => (
             <Field key={fd.key} label={fd.label} hint={fd.hint}>
               <Input
@@ -157,6 +172,11 @@ function ConfigForm({ store }: { store: Store }) {
           <Field label="Max staff per shift" hint="Store capacity; blank = no limit">
             <Input name="ap_max_staff" type="number" step="1" min={1} defaultValue={(current?.autopilot_settings ?? DEFAULT_AUTOPILOT).max_staff_per_shift ?? ""} />
           </Field>
+          {review.length > 0 && (
+            <ul className="md:col-span-2 list-disc rounded-md border border-warning/40 bg-warning/10 p-3 pl-8 text-sm">
+              {review.map((note) => <li key={note}>{note}</li>)}
+            </ul>
+          )}
           <div className="md:col-span-2"><ErrorNotice error={save.error ?? cfg.error} /></div>
           <div className="md:col-span-2 flex items-center gap-3">
             <Button type="submit" disabled={save.isPending}>Save configuration</Button>

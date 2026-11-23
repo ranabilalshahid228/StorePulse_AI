@@ -3,7 +3,7 @@
 export type UUID = string;
 export type JobStatus = "pending" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type DatasetStatus = "uploaded" | "mapping_required" | "queued" | "processing" | "ready" | "failed";
-export type ModelFamily = "seasonal_naive" | "lightgbm" | "torch_mlp" | "torch_gru" | "ensemble";
+export type ModelFamily = "seasonal_naive" | "arima" | "sarima" | "lightgbm" | "torch_mlp" | "torch_gru" | "ensemble";
 export type TargetType = "sales" | "units" | "customers";
 
 export interface Page<T> {
@@ -468,6 +468,7 @@ export interface AutopilotResult {
   currency: string;
   target_type: TargetType;
   kpis: AutopilotKpis;
+  interval_available?: boolean;
   totals: AutopilotTotals;
   scenario_impact: { revenue_p50: number; net_profit_p50: number; labor_cost: number } | null;
   days: AutopilotDay[];

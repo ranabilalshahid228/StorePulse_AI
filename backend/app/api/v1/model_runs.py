@@ -94,8 +94,7 @@ async def submit_training(body: TrainRequest, principal: AnalystPrincipal, db: D
     run = _new_run(body, principal, RunType.TRAIN, validation_days)
     db.add(run)
     await db.commit()
-    run.celery_task_id = dispatch.enqueue(dispatch.TASK_TRAIN, run.id, dispatch.QUEUE_TRAIN)
-    await db.commit()
+    await dispatch.enqueue_job(db, run, dispatch.TASK_TRAIN, dispatch.QUEUE_TRAIN)
     return JobAccepted(id=run.id, status=run.status, celery_task_id=run.celery_task_id)
 
 
@@ -110,14 +109,14 @@ async def submit_tuning(body: TuneRequest, principal: AnalystPrincipal, db: DbSe
     run.n_trials = body.n_trials or get_settings().optuna_default_trials
     db.add(run)
     await db.commit()
-    run.celery_task_id = dispatch.enqueue(
+    await dispatch.enqueue_job(
+        db,
+        run,
         dispatch.TASK_TUNE,
-        run.id,
         dispatch.QUEUE_TRAIN,
         metric=body.metric,
         timeout_s=body.timeout_minutes * 60 if body.timeout_minutes else None,
     )
-    await db.commit()
     return JobAccepted(id=run.id, status=run.status, celery_task_id=run.celery_task_id)
 
 

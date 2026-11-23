@@ -57,11 +57,19 @@ DAILY_COLUMNS = [
 ]
 
 
+def _has_interval(result: dict[str, Any]) -> bool:
+    if "interval_available" in result:
+        return bool(result["interval_available"])
+    return not any("no interval available" in line for line in result.get("assumptions", []))
+
+
 def daily_frame(result: dict[str, Any]) -> pd.DataFrame:
     df = pd.DataFrame(result["days"])
     staff = [f"staff_{n}" for n in result.get("shift_names", [])]
     cols = [c for c in DAILY_COLUMNS[:15] if c in df] + [c for c in staff if c in df]
     cols += [c for c in DAILY_COLUMNS[15:] if c in df]
+    if not _has_interval(result):
+        df = df.assign(**{c: None for c in cols if c.endswith(("_p10", "_p90"))})
     return df[cols]
 
 
@@ -71,6 +79,8 @@ def to_csv(result: dict[str, Any]) -> bytes:
 
 def to_xlsx(result: dict[str, Any]) -> bytes:
     k = result["kpis"]
+    if not _has_interval(result):
+        k = {key: None if key.endswith(("_p10", "_p90")) else value for key, value in k.items()}
     summary = pd.DataFrame(
         [{"metric": key.replace("_", " "), "value": v} for key, v in k.items() if not isinstance(v, dict)]
     )
@@ -119,12 +129,13 @@ def _style(ax: Any, title: str) -> None:
     ax.tick_params(labelsize=7)
 
 
-def revenue_chart(df: pd.DataFrame, currency: str) -> io.BytesIO:
+def revenue_chart(df: pd.DataFrame, currency: str, *, show_band: bool = True) -> io.BytesIO:
     ds = pd.to_datetime(df["ds"])
     fig, ax = plt.subplots(figsize=(10, 3.2))
-    ax.fill_between(
-        ds, df["revenue_p10"], df["revenue_p90"], color=SERIES["band"], alpha=0.5, label="P10-P90"
-    )
+    if show_band:
+        ax.fill_between(
+            ds, df["revenue_p10"], df["revenue_p90"], color=SERIES["band"], alpha=0.5, label="P10-P90"
+        )
     ax.plot(ds, df["revenue_p50"], color=SERIES["p50"], linewidth=2, label="Revenue P50")
     if "baseline_revenue_p50" in df and df["baseline_revenue_p50"].notna().any():
         ax.plot(ds, df["baseline_revenue_p50"], color=SERIES["baseline"], linestyle="--", label="Baseline")
@@ -185,6 +196,13 @@ def executive_pdf(result: dict[str, Any], *, title: str, org_name: str, store_na
     cur = result["currency"]
     k, t, w = result["kpis"], result["totals"], result["window"]
     df = pd.DataFrame(result["days"])
+    show_band = _has_interval(result)
+
+    def interval_text(row: dict[str, Any], metric: str, currency: str = "") -> str:
+        if not show_band:
+            return "Unavailable"
+        return f"{_m(row[f'{metric}_p10'], currency)} - {_m(row[f'{metric}_p90'], currency)}"
+
     styles = getSampleStyleSheet()
     small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, leading=10)
     buf = io.BytesIO()
@@ -212,7 +230,7 @@ def executive_pdf(result: dict[str, Any], *, title: str, org_name: str, store_na
         ["Revenue P50", "Revenue P10 - P90", "Net profit P50", "Net margin", "Break-even revenue"],
         [
             _m(k["revenue_p50"], cur),
-            f"{_m(k['revenue_p10'], cur)} - {_m(k['revenue_p90'], cur)}",
+            interval_text(k, "revenue", cur),
             _m(k["net_profit_p50"], cur),
             _pct(k["net_margin_pct"]),
             _m(k["break_even_revenue"], cur),
@@ -245,7 +263,7 @@ def executive_pdf(result: dict[str, Any], *, title: str, org_name: str, store_na
         )
     if result.get("cold_start"):
         story.append(Paragraph(f"<b>Cold start:</b> {result['cold_start']['note']}", styles["Normal"]))
-    story.append(Image(revenue_chart(df, cur), width=width, height=width * 0.32))
+    story.append(Image(revenue_chart(df, cur, show_band=show_band), width=width, height=width * 0.32))
 
     story += [Paragraph("Autopilot actions", styles["Heading2"])]
     recs = result["recommendations"] or [
@@ -271,7 +289,7 @@ def executive_pdf(result: dict[str, Any], *, title: str, org_name: str, store_na
         ["Line", f"Amount ({cur})", "Notes"],
         ["Gross (list-price) revenue", _m(t["gross_revenue"]), ""],
         ["Promo discount", _m(-(t["promo_discount"] or 0)), "realized vs list price on promo days"],
-        ["Net revenue P50", _m(t["revenue_p50"]), f"P10 {_m(t['revenue_p10'])} / P90 {_m(t['revenue_p90'])}"],
+        ["Net revenue P50", _m(t["revenue_p50"]), interval_text(t, "revenue")],
         ["COGS", _m(-(t["cogs"] or 0)), ""],
         ["Gross profit", _m(t["gross_profit"]), f"margin {_pct(t['gross_margin_pct'])}"],
         ["Labour cost", _m(-(t["labor_cost"] or 0)), f"{_m(k['labor_hours'])} scheduled hours"],
@@ -279,7 +297,7 @@ def executive_pdf(result: dict[str, Any], *, title: str, org_name: str, store_na
         [
             "Net profit P50",
             _m(t["net_profit_p50"]),
-            f"P10 {_m(t['net_profit_p10'])} / P90 {_m(t['net_profit_p90'])}",
+            interval_text(t, "net_profit"),
         ],
         [
             "Break-even revenue",
@@ -318,7 +336,7 @@ def executive_pdf(result: dict[str, Any], *, title: str, org_name: str, store_na
                 _m(d["is_open"]),
                 _m(d["is_promo"]),
                 _m(d["revenue_p50"]),
-                f"{_m(d['revenue_p10'])} - {_m(d['revenue_p90'])}",
+                interval_text(d, "revenue"),
                 _m(d["footfall"]),
                 *[str(d.get(f"staff_{n}", 0)) for n in names],
                 str(d.get("surge_staff", 0)),

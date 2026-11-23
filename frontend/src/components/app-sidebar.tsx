@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { href: "/", label: "Command Center", icon: Activity },
   { href: "/data", label: "Data & EDA", icon: Database },
+  { href: "/forecasts", label: "Forecasts", icon: BarChart3 },
   { href: "/model-lab", label: "Model Lab", icon: FlaskConical },
   { href: "/autopilot", label: "Store Autopilot", icon: Rocket },
   { href: "/pnl-workforce", label: "P&L & Workforce", icon: Wallet },
