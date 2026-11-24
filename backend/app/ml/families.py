@@ -492,7 +492,13 @@ class TorchMLPModel(ForecastModel):
             self.num_mean = filled.mean(axis=0)
             self.num_std = filled.std(axis=0) + 1e-6
         num = self._log_num(X[self.num_cols].to_numpy(dtype="float32"))
-        num = (np.where(np.isnan(num), self.num_fill, num) - self.num_mean) / self.num_std
+        # A column constant in training (e.g. lag_364 with one year of history) has std ~ 0: dividing by
+        # it turns any later value into ~1e9 and saturates the net. The net learned nothing from such a
+        # column, so feed its training value (z = 0). Applied at use time, so saved models are fixed too.
+        constant = self.num_std < 1e-4
+        filled = np.where(np.isnan(num), self.num_fill, num)
+        z = (filled - self.num_mean) / np.where(constant, 1.0, self.num_std)
+        num = np.where(constant, 0.0, z)
         cat = np.stack([X[c].cat.codes.to_numpy() + 1 for c in self.cat_cols], axis=1).astype("int64")
         return num.astype("float32"), cat  # code 0 == unknown/missing
 

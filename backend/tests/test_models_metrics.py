@@ -336,3 +336,24 @@ def test_torch_closed_rule_transforms_and_quantiles(
     again = ForecastModel.load(tmp_path / "m.pt")
     np.testing.assert_allclose(again.predict(val[cols]), p, rtol=1e-5)
     np.testing.assert_allclose(again.predict_quantiles(val[cols])[0.9], q[0.9], rtol=1e-5)
+
+
+def test_torch_inputs_ignore_columns_constant_in_training() -> None:
+    """One year of history: lag_364 is empty (constant) in training but filled at forecast time. Dividing
+    by its ~0 std used to blow it up to ~1e9 and saturate the net to an all-zero forecast."""
+    from types import SimpleNamespace
+
+    model = FAMILIES[ModelFamily.TORCH_MLP].__new__(FAMILIES[ModelFamily.TORCH_MLP])
+    model.spec = SimpleNamespace(
+        feature_columns=["store", "lag_7", "lag_364"], categorical_features=["store"]
+    )
+    model.params = {"feature_log": False}
+    store = pd.Categorical(["a", "b", "a", "b"])
+    train = pd.DataFrame({"store": store, "lag_7": [1.0, 2.0, 3.0, 4.0], "lag_364": [np.nan] * 4})
+    model._tabular(train)  # fits the input statistics
+    future = pd.DataFrame({"store": store[:2], "lag_7": [2.5, 9.0], "lag_364": [3800.0, 4100.0]})
+    num, cat = model._tabular(future)
+    lag_364 = model.num_cols.index("lag_364")
+    assert np.all(num[:, lag_364] == 0.0)  # the training value: the net learned nothing from it
+    assert np.isfinite(num).all() and np.abs(num).max() < 10
+    assert cat.tolist() == [[1], [2]]
