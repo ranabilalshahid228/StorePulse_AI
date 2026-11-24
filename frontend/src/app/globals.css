@@ -85,6 +85,15 @@
   border-color: var(--border);
 }
 
+/* Grid items default to min-width: auto, so a wide table or chart inside a single-column (phone) grid
+   stretches the whole page instead of scrolling inside its own overflow-x-auto box. Base layer: any
+   min-w-* utility still wins. */
+@layer base {
+  .grid > * {
+    min-width: 0;
+  }
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
