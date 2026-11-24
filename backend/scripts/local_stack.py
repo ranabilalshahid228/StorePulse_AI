@@ -426,6 +426,8 @@ def up(args: argparse.Namespace) -> None:
     finally:
         for p in procs.values():
             _kill(p)
+        # The QR's link dies with the app: never leave a stale code behind to scan next time.
+        (LOCAL / "demo_qr.png").unlink(missing_ok=True)
         if not args.keep_db:
             db_stop()
 
