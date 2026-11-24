@@ -1,0 +1,190 @@
+D:\StorePulse_AI\backend\.venv\Lib\site-packages\pytest_asyncio\plugin.py:306: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session". Set it to "fixture-scope" to keep the current behavior.
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+.........................................................                [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_autopilot.py::test_basket_footfall_by_weekday_and_promo
+  D:\StorePulse_AI\backend\tests\test_autopilot.py:149: Pandas4Warning: DatetimeIndex.dayofweek is deprecated and will be removed in a future version. Use DatetimeIndex.day_of_week instead.
+    promo = (ds.dayofweek < 2).astype(int)  # Mon/Tue promo
+
+tests/test_autopilot.py: 11 warnings
+  D:\StorePulse_AI\backend\app\services\autopilot.py:355: Pandas4Warning: Series.dt.dayofweek is deprecated and will be removed in a future version. Use Series.dt.day_of_week instead.
+    d["dow"] = d["ds"].dt.dayofweek
+
+tests/test_autopilot.py: 12 warnings
+  D:\StorePulse_AI\backend\app\services\autopilot.py:377: Pandas4Warning: Series.dt.dayofweek is deprecated and will be removed in a future version. Use Series.dt.day_of_week instead.
+    dows = days["ds"].dt.dayofweek.to_numpy()
+
+tests/test_autopilot.py: 11 warnings
+tests/test_eda.py: 1 warning
+tests/test_joins_features.py: 1 warning
+tests/test_models_metrics.py: 13 warnings
+tests/test_pipeline.py: 14 warnings
+  D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+    out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+
+tests/test_autopilot.py::test_rossmann_week_plan_and_exports
+tests/test_autopilot.py::test_rossmann_whatif_scenario
+tests/test_autopilot.py::test_rossmann_whatif_scenario
+tests/test_autopilot.py::test_rossmann_custom_range_and_horizon_limit
+tests/test_autopilot.py::test_rossmann_custom_range_and_horizon_limit
+tests/test_autopilot.py::test_rossmann_wage_override_and_workforce_kpis
+tests/test_autopilot.py::test_rossmann_wage_override_and_workforce_kpis
+  D:\StorePulse_AI\backend\app\services\autopilot.py:614: Pandas4Warning: Series.dt.dayofweek is deprecated and will be removed in a future version. Use Series.dt.day_of_week instead.
+    r["dow"] = r["ds"].dt.dayofweek
+
+tests/test_autopilot.py: 70 warnings
+  D:\StorePulse_AI\backend\app\services\autopilot.py:621: Pandas4Warning: Timestamp.dayofweek is deprecated and will be removed in a future version. Use Timestamp.day_of_week instead.
+    dow = row.ds.dayofweek
+
+tests/test_autopilot.py: 78 warnings
+  D:\StorePulse_AI\backend\app\services\autopilot.py:666: Pandas4Warning: Timestamp.dayofweek is deprecated and will be removed in a future version. Use Timestamp.day_of_week instead.
+    labels = [f"{WEEKDAYS[d.dayofweek]} {d:%d %b}" for d in ds[:limit]]
+
+tests/test_autopilot.py::test_rossmann_week_plan_and_exports
+  D:\StorePulse_AI\backend\tests\test_autopilot.py:326: Pandas4Warning: Timestamp.dayofweek is deprecated and will be removed in a future version. Use Timestamp.day_of_week instead.
+    assert len(closed) == 1 and pd.Timestamp(closed["ds"].iat[0]).dayofweek == 6  # Rossmann store 1: Sundays
+
+tests/test_eda.py::test_rossmann_eda
+  D:\StorePulse_AI\backend\app\services\eda.py:70: Pandas4Warning: Series.dt.dayofweek is deprecated and will be removed in a future version. Use Series.dt.day_of_week instead.
+    o = open_days.assign(dow=open_days["ds"].dt.dayofweek, month=open_days["ds"].dt.month)
+
+tests/test_eda.py::test_rossmann_eda
+  D:\StorePulse_AI\backend\app\services\eda.py:91: Pandas4Warning: Series.dt.dayofweek is deprecated and will be removed in a future version. Use Series.dt.day_of_week instead.
+    share = days.assign(dow=days["ds"].dt.dayofweek).groupby("dow")["open"].mean()
+
+tests/test_eda.py::test_residual_diagnostics
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[sarima]
+tests/test_pipeline.py::test_tune_scores_trials_on_inner_split[lightgbm-base0-space0-fixed0]
+tests/test_pipeline.py::test_tune_scores_trials_on_inner_split[torch_mlp-base1-space1-fixed1]
+  D:\StorePulse_AI\backend\app\ml\training.py:179: Pandas4Warning: Series.dt.dayofweek is deprecated and will be removed in a future version. Use Series.dt.day_of_week instead.
+    frame = pd.DataFrame({"y": y, "p": p, "dow": ds.dt.dayofweek, "week": (ds - ds.min()).dt.days // 7 + 1})
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tools\numdiff.py:349: Pandas4Warning: Substitution is deprecated and will be removed in a future version.
+    @Substitution(
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tools\numdiff.py:361: Pandas4Warning: Appender is deprecated and will be removed in a future version.
+    @Appender(_hessian_docs)
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tools\numdiff.py:387: Pandas4Warning: Substitution is deprecated and will be removed in a future version.
+    @Substitution(
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tools\numdiff.py:402: Pandas4Warning: Appender is deprecated and will be removed in a future version.
+    @Appender(_hessian_docs)
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tools\numdiff.py:433: Pandas4Warning: Substitution is deprecated and will be removed in a future version.
+    @Substitution(
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tools\numdiff.py:443: Pandas4Warning: Appender is deprecated and will be removed in a future version.
+    @Appender(_hessian_docs)
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tsa\statespace\tools.py:870: Pandas4Warning: Appender is deprecated and will be removed in a future version.
+    @Appender(constrain_stationary_multivariate_python.__doc__)
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1970: Pandas4Warning: Appender is deprecated and will be removed in a future version.
+    @Appender(MLEResults.summary.__doc__)
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[sarima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[sarima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[sarima]
+  D:\StorePulse_AI\backend\app\ml\families.py:235: Pandas4Warning: DatetimeIndex.dayofweek is deprecated and will be removed in a future version. Use DatetimeIndex.day_of_week instead.
+    return recent.groupby(recent.index.dayofweek).mean().reindex(range(7)).fillna(0).to_numpy()
+
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[arima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[sarima]
+tests/test_models_metrics.py::test_statistical_benchmark_roundtrip[sarima]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py:174: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    endog.shape = (endog.shape[0], 1)  # this will be C-contiguous
+
+tests/test_models_metrics.py: 10 warnings
+  D:\StorePulse_AI\backend\app\ml\families.py:271: Pandas4Warning: Parsing integer or float values with a format in to_datetime is deprecated. In a future version these will be interpreted as epochs via the 'unit' keyword instead. Cast them to strings first to retain the current behavior.
+    dates = pd.to_datetime(X["year"].astype(int) * 1000 + X["dayofyear"].astype(int), format="%Y%j")
+
+tests/test_models_metrics.py: 12 warnings
+  D:\StorePulse_AI\backend\app\ml\families.py:249: Pandas4Warning: DatetimeIndex.dayofweek is deprecated and will be removed in a future version. Use DatetimeIndex.day_of_week instead.
+    predictions[rows] = profile[dates[rows].dayofweek]
+
+tests/test_models_metrics.py::test_gru_poisson_roundtrip
+tests/test_models_metrics.py::test_ensemble_weights_comparison_and_pickle
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[log1p-torch_mlp]
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[log1p-torch_gru]
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[standard-torch_mlp]
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[standard-torch_gru]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1593: RuntimeWarning: All-NaN slice encountered
+    return fnb._ureduce(a,
+
+tests/test_models_metrics.py::test_gru_poisson_roundtrip
+tests/test_models_metrics.py::test_ensemble_weights_comparison_and_pickle
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[log1p-torch_mlp]
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[log1p-torch_gru]
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[standard-torch_mlp]
+tests/test_models_metrics.py::test_torch_closed_rule_transforms_and_quantiles[standard-torch_gru]
+  D:\StorePulse_AI\backend\.venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1215: RuntimeWarning: All-NaN slice encountered
+    return fnb._ureduce(a, func=_nanmedian, keepdims=keepdims,
+
+tests/test_models_metrics.py::test_closed_rule_and_log_target
+tests/test_models_metrics.py::test_closed_rule_and_log_target
+  D:\StorePulse_AI\backend\tests\test_models_metrics.py:259: Pandas4Warning: DatetimeIndex.dayofweek is deprecated and will be removed in a future version. Use DatetimeIndex.day_of_week instead.
+    open_ = (ds.dayofweek != 6).astype(float)
+
+tests/test_models_metrics.py: 12 warnings
+  D:\StorePulse_AI\backend\tests\test_models_metrics.py:300: Pandas4Warning: DatetimeIndex.dayofweek is deprecated and will be removed in a future version. Use DatetimeIndex.day_of_week instead.
+    open_ = (ds.dayofweek != 6).astype(float)
+
+tests/test_models_metrics.py::test_torch_inputs_ignore_columns_constant_in_training
+  D:\StorePulse_AI\backend\app\ml\families.py:489: RuntimeWarning: All-NaN slice encountered
+    fill = np.nanmedian(num, axis=0)
+
+tests/test_pipeline.py::test_profile_suggests_rossmann_mapping
+  D:\StorePulse_AI\backend\app\services\ingestion.py:62: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+    if len(non_null) and pd.to_datetime(non_null.head(200), errors="coerce").notna().mean() > 0.95:
+
+tests/test_pipeline.py: 59 warnings
+  D:\StorePulse_AI\backend\app\ml\features.py:292: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+    out[f"seqx_{c}_{k}"] = by_c.shift(o + k)
+
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+  D:\StorePulse_AI\backend\app\ml\features.py:449: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+    out["promo_streak"] = _run_length(promo, gid)
+
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+  D:\StorePulse_AI\backend\app\ml\features.py:450: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+    out["days_since_promo"] = _days_since(promo, gid)
+
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+  D:\StorePulse_AI\backend\app\ml\features.py:454: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+    out["days_since_closed"] = _days_since(closed, gid, cap=30)
+
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+tests/test_pipeline.py::test_train_and_forecast[torch_gru]
+  D:\StorePulse_AI\backend\app\ml\features.py:455: PerformanceWarning: DataFrame is highly fragmented.  This is usually the result of calling `frame.insert` many times, which has poor performance.  Consider joining all columns at once using pd.concat(axis=1) instead. To get a de-fragmented frame, use `newframe = frame.copy()`
+    out["closed_streak_lag1"] = _run_length(closed, gid).groupby(gid, sort=False).shift(1).fillna(0)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+57 passed, 367 warnings in 38.50s

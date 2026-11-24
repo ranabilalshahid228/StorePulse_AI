@@ -1,0 +1,2 @@
+Windows-11-10.0.22621-SP0 | Intel64 Family 6 Model 142 Stepping 12, GenuineIntel | Python 3.12.0 | loopback, single client, sequential calls, after one warm-up call per endpoint
+Hardware: Intel Core i7-8665U @ 1.90 GHz (4 cores / 8 threads), 23.8 GB RAM, Intel UHD 620 (no CUDA GPU)

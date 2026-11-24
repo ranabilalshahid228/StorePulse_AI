@@ -1,0 +1,108 @@
+{
+  "dataset": "rossmann",
+  "stores": null,
+  "horizon": 30,
+  "models": {
+    "seasonal_naive": {
+      "accuracy": 0.804649534558453,
+      "wape": 0.19535046544154694,
+      "rmse": 1646.4750462239601,
+      "mae": 1187.479379671151,
+      "rmsse": 0.35875838484545575,
+      "r2": 0.7918288210265859,
+      "rmspe": 0.2509059070906044,
+      "bias_pct": -0.03381455859902368,
+      "params": {},
+      "interval": {
+        "method": "empirical_relative_residual",
+        "coverage": 0.8260986547085202,
+        "lower": -0.25253329427369414,
+        "upper": 0.47888264448086787,
+        "mean_width": 4295.725639163491,
+        "pinball_p10": 204.29791028769523,
+        "pinball_p50": 593.7396898355755,
+        "pinball_p90": 334.6559717777903,
+        "coverage_holdout": 0.8349177877428998
+      },
+      "ensemble": null,
+      "fit_seconds": 0.0,
+      "forecast_seconds": 6.2,
+      "forecast_rows": 33450,
+      "forecast_window": [
+        "2015-08-01",
+        "2015-08-30"
+      ],
+      "forecast_total": 194728589.0,
+      "future_covariate_nulls": {}
+    },
+    "lightgbm": {
+      "accuracy": 0.9029928502662723,
+      "wape": 0.09700714973372766,
+      "rmse": 869.5630021046213,
+      "mae": 589.678605213981,
+      "rmsse": 0.1856616432189045,
+      "r2": 0.9419352711442608,
+      "rmspe": 0.1537740397652215,
+      "bias_pct": 0.00546871441218289,
+      "params": {
+        "resolved_objective": "regression",
+        "best_iteration": 50
+      },
+      "interval": {
+        "method": "empirical_relative_residual",
+        "coverage": 0.8261285500747384,
+        "lower": -0.17683173396682464,
+        "upper": 0.1378302965698641,
+        "mean_width": 1923.2003500634685,
+        "pinball_p10": 134.25283182341582,
+        "pinball_p50": 294.8393026069905,
+        "pinball_p90": 139.18104354368276,
+        "coverage_holdout": 0.8152466367713005
+      },
+      "ensemble": null,
+      "fit_seconds": 22.0,
+      "forecast_seconds": 6.6,
+      "forecast_rows": 33450,
+      "forecast_window": [
+        "2015-08-01",
+        "2015-08-30"
+      ],
+      "forecast_total": 214492742.76823807,
+      "future_covariate_nulls": {},
+      "top_features": [
+        "dow_mean_13w",
+        "days_since_promo",
+        "store_code",
+        "Promo",
+        "agg_store_type_ratio",
+        "dow_mean_4w",
+        "dayofyear",
+        "promo_streak",
+        "dom",
+        "weekofyear"
+      ]
+    }
+  },
+  "ingest": {
+    "row_count": 1017209,
+    "dropped_rows": 0,
+    "series_count": 1115,
+    "date_min": "2013-01-01",
+    "date_max": "2015-07-31",
+    "store_count": 1115,
+    "seconds": 1.6
+  },
+  "health": {
+    "score": 90,
+    "issues": [
+      "date_gaps",
+      "outliers"
+    ]
+  },
+  "features": {
+    "train_rows": 778056,
+    "val_rows": 33450,
+    "n_features": 50,
+    "seconds": 9.4
+  }
+}

@@ -1,0 +1,10 @@
+model,where,seconds
+LightGBM,"GPU host (CPU, 16 threads)",11.18
+MLP,GPU host (RTX 6000 Ada),10.82
+GRU,GPU host (RTX 6000 Ada),43.31
+Ensemble,GPU host (RTX 6000 Ada),43.87
+Seasonal naive,laptop CPU (i7-8665U),0.01
+LightGBM,laptop CPU (i7-8665U),55.38
+MLP,laptop CPU (i7-8665U),613.78
+"ARIMA(1,1,1)",laptop CPU (i7-8665U),726.96
+SARIMA,laptop CPU (i7-8665U),1694.52

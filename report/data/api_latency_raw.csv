@@ -1,0 +1,211 @@
+endpoint,call,ms,bytes
+GET /health/ready,1,3.25,56
+GET /health/ready,2,3.52,56
+GET /health/ready,3,4.64,56
+GET /health/ready,4,3.67,56
+GET /health/ready,5,3.38,56
+GET /health/ready,6,3.35,56
+GET /health/ready,7,3.01,56
+GET /health/ready,8,3.84,56
+GET /health/ready,9,2.94,56
+GET /health/ready,10,3.27,56
+GET /health/ready,11,3.61,56
+GET /health/ready,12,3.1,56
+GET /health/ready,13,3.65,56
+GET /health/ready,14,3.08,56
+GET /health/ready,15,2.96,56
+GET /health/ready,16,2.93,56
+GET /health/ready,17,3.39,56
+GET /health/ready,18,4.5,56
+GET /health/ready,19,3.45,56
+GET /health/ready,20,3.04,56
+GET /health/ready,21,2.94,56
+GET /health/ready,22,2.92,56
+GET /health/ready,23,4.56,56
+GET /health/ready,24,2.93,56
+GET /health/ready,25,2.91,56
+GET /health/ready,26,2.93,56
+GET /health/ready,27,3.62,56
+GET /health/ready,28,4.82,56
+GET /health/ready,29,3.28,56
+GET /health/ready,30,2.95,56
+GET /stores (50),1,8.7,25768
+GET /stores (50),2,11.45,25768
+GET /stores (50),3,9.38,25768
+GET /stores (50),4,10.16,25768
+GET /stores (50),5,11.71,25768
+GET /stores (50),6,9.41,25768
+GET /stores (50),7,9.79,25768
+GET /stores (50),8,11.02,25768
+GET /stores (50),9,9.33,25768
+GET /stores (50),10,10.91,25768
+GET /stores (50),11,8.84,25768
+GET /stores (50),12,10.08,25768
+GET /stores (50),13,12.92,25768
+GET /stores (50),14,10.92,25768
+GET /stores (50),15,9.77,25768
+GET /stores (50),16,10.9,25768
+GET /stores (50),17,8.81,25768
+GET /stores (50),18,9.97,25768
+GET /stores (50),19,9.94,25768
+GET /stores (50),20,9.95,25768
+GET /stores (50),21,8.96,25768
+GET /stores (50),22,9.77,25768
+GET /stores (50),23,11.3,25768
+GET /stores (50),24,9.44,25768
+GET /stores (50),25,9.77,25768
+GET /stores (50),26,9.41,25768
+GET /stores (50),27,9.94,25768
+GET /stores (50),28,9.26,25768
+GET /stores (50),29,9.6,25768
+GET /stores (50),30,9.92,25768
+GET /model-runs,1,7.58,36184
+GET /model-runs,2,7.53,36184
+GET /model-runs,3,7.53,36184
+GET /model-runs,4,7.21,36184
+GET /model-runs,5,6.5,36184
+GET /model-runs,6,8.72,36184
+GET /model-runs,7,6.82,36184
+GET /model-runs,8,7.49,36184
+GET /model-runs,9,6.5,36184
+GET /model-runs,10,8.17,36184
+GET /model-runs,11,7.55,36184
+GET /model-runs,12,7.99,36184
+GET /model-runs,13,6.93,36184
+GET /model-runs,14,7.77,36184
+GET /model-runs,15,9.35,36184
+GET /model-runs,16,6.83,36184
+GET /model-runs,17,7.63,36184
+GET /model-runs,18,6.57,36184
+GET /model-runs,19,8.73,36184
+GET /model-runs,20,6.78,36184
+GET /model-runs,21,8.0,36184
+GET /model-runs,22,6.75,36184
+GET /model-runs,23,7.83,36184
+GET /model-runs,24,6.53,36184
+GET /model-runs,25,6.93,36184
+GET /model-runs,26,8.06,36184
+GET /model-runs,27,6.58,36184
+GET /model-runs,28,7.46,36184
+GET /model-runs,29,7.14,36184
+GET /model-runs,30,7.9,36184
+GET /forecasts/{id}/series,1,17.38,5706
+GET /forecasts/{id}/series,2,17.83,5706
+GET /forecasts/{id}/series,3,17.36,5706
+GET /forecasts/{id}/series,4,24.22,5706
+GET /forecasts/{id}/series,5,19.14,5706
+GET /forecasts/{id}/series,6,19.1,5706
+GET /forecasts/{id}/series,7,17.6,5706
+GET /forecasts/{id}/series,8,17.32,5706
+GET /forecasts/{id}/series,9,18.43,5706
+GET /forecasts/{id}/series,10,18.4,5706
+GET /forecasts/{id}/series,11,17.74,5706
+GET /forecasts/{id}/series,12,18.18,5706
+GET /forecasts/{id}/series,13,17.59,5706
+GET /forecasts/{id}/series,14,18.1,5706
+GET /forecasts/{id}/series,15,18.48,5706
+GET /forecasts/{id}/series,16,17.31,5706
+GET /forecasts/{id}/series,17,17.96,5706
+GET /forecasts/{id}/series,18,18.14,5706
+GET /forecasts/{id}/series,19,17.71,5706
+GET /forecasts/{id}/series,20,17.02,5706
+GET /forecasts/{id}/series,21,17.46,5706
+GET /forecasts/{id}/series,22,17.48,5706
+GET /forecasts/{id}/series,23,17.2,5706
+GET /forecasts/{id}/series,24,17.35,5706
+GET /forecasts/{id}/series,25,18.12,5706
+GET /forecasts/{id}/series,26,17.61,5706
+GET /forecasts/{id}/series,27,17.8,5706
+GET /forecasts/{id}/series,28,18.36,5706
+GET /forecasts/{id}/series,29,18.21,5706
+GET /forecasts/{id}/series,30,18.15,5706
+GET /forecasts/{id}/pnl,1,58.4,8173
+GET /forecasts/{id}/pnl,2,47.45,8173
+GET /forecasts/{id}/pnl,3,56.48,8173
+GET /forecasts/{id}/pnl,4,59.56,8173
+GET /forecasts/{id}/pnl,5,49.87,8173
+GET /forecasts/{id}/pnl,6,48.67,8173
+GET /forecasts/{id}/pnl,7,46.38,8173
+GET /forecasts/{id}/pnl,8,59.57,8173
+GET /forecasts/{id}/pnl,9,47.27,8173
+GET /forecasts/{id}/pnl,10,46.92,8173
+GET /forecasts/{id}/pnl,11,48.12,8173
+GET /forecasts/{id}/pnl,12,54.9,8173
+GET /forecasts/{id}/pnl,13,46.33,8173
+GET /forecasts/{id}/pnl,14,45.13,8173
+GET /forecasts/{id}/pnl,15,53.18,8173
+GET /forecasts/{id}/pnl,16,55.2,8173
+GET /forecasts/{id}/pnl,17,51.51,8173
+GET /forecasts/{id}/pnl,18,57.61,8173
+GET /forecasts/{id}/pnl,19,70.5,8173
+GET /forecasts/{id}/pnl,20,64.42,8173
+GET /forecasts/{id}/pnl,21,50.88,8173
+GET /forecasts/{id}/pnl,22,51.13,8173
+GET /forecasts/{id}/pnl,23,50.55,8173
+GET /forecasts/{id}/pnl,24,48.83,8173
+GET /forecasts/{id}/pnl,25,54.58,8173
+GET /forecasts/{id}/pnl,26,48.57,8173
+GET /forecasts/{id}/pnl,27,53.71,8173
+GET /forecasts/{id}/pnl,28,48.24,8173
+GET /forecasts/{id}/pnl,29,58.19,8173
+GET /forecasts/{id}/pnl,30,50.06,8173
+GET /forecasts/{id}/workforce,1,47.14,6491
+GET /forecasts/{id}/workforce,2,53.76,6491
+GET /forecasts/{id}/workforce,3,45.74,6491
+GET /forecasts/{id}/workforce,4,50.73,6491
+GET /forecasts/{id}/workforce,5,50.49,6491
+GET /forecasts/{id}/workforce,6,49.61,6491
+GET /forecasts/{id}/workforce,7,51.57,6491
+GET /forecasts/{id}/workforce,8,63.73,6491
+GET /forecasts/{id}/workforce,9,54.63,6491
+GET /forecasts/{id}/workforce,10,47.5,6491
+GET /forecasts/{id}/workforce,11,51.46,6491
+GET /forecasts/{id}/workforce,12,58.82,6491
+GET /forecasts/{id}/workforce,13,58.61,6491
+GET /forecasts/{id}/workforce,14,56.52,6491
+GET /forecasts/{id}/workforce,15,55.64,6491
+GET /forecasts/{id}/workforce,16,53.99,6491
+GET /forecasts/{id}/workforce,17,53.68,6491
+GET /forecasts/{id}/workforce,18,54.46,6491
+GET /forecasts/{id}/workforce,19,52.19,6491
+GET /forecasts/{id}/workforce,20,56.31,6491
+GET /forecasts/{id}/workforce,21,59.92,6491
+GET /forecasts/{id}/workforce,22,55.04,6491
+GET /forecasts/{id}/workforce,23,47.11,6491
+GET /forecasts/{id}/workforce,24,46.8,6491
+GET /forecasts/{id}/workforce,25,63.1,6491
+GET /forecasts/{id}/workforce,26,50.59,6491
+GET /forecasts/{id}/workforce,27,48.54,6491
+GET /forecasts/{id}/workforce,28,52.56,6491
+GET /forecasts/{id}/workforce,29,56.61,6491
+GET /forecasts/{id}/workforce,30,55.63,6491
+GET /datasets/{id}/eda (1.0M rows),1,1688.86,9132
+GET /datasets/{id}/eda (1.0M rows),2,1809.25,9132
+GET /datasets/{id}/eda (1.0M rows),3,1807.65,9132
+GET /datasets/{id}/eda (1.0M rows),4,1583.61,9132
+GET /datasets/{id}/eda (1.0M rows),5,1598.29,9132
+GET /datasets/{id}/eda (1.0M rows),6,1650.4,9132
+GET /datasets/{id}/eda (1.0M rows),7,1728.65,9132
+GET /datasets/{id}/eda (1.0M rows),8,1667.07,9132
+GET /datasets/{id}/eda (1.0M rows),9,1599.56,9132
+GET /datasets/{id}/eda (1.0M rows),10,1745.44,9132
+GET /datasets/{id}/eda (1.0M rows),11,1728.28,9132
+GET /datasets/{id}/eda (1.0M rows),12,1685.04,9132
+GET /datasets/{id}/eda (1.0M rows),13,1816.53,9132
+GET /datasets/{id}/eda (1.0M rows),14,1749.71,9132
+GET /datasets/{id}/eda (1.0M rows),15,1964.1,9132
+GET /datasets/{id}/eda (1.0M rows),16,1713.12,9132
+GET /datasets/{id}/eda (1.0M rows),17,1792.97,9132
+GET /datasets/{id}/eda (1.0M rows),18,1942.44,9132
+GET /datasets/{id}/eda (1.0M rows),19,1762.47,9132
+GET /datasets/{id}/eda (1.0M rows),20,1822.33,9132
+GET /datasets/{id}/eda (1.0M rows),21,1891.52,9132
+GET /datasets/{id}/eda (1.0M rows),22,1732.14,9132
+GET /datasets/{id}/eda (1.0M rows),23,1704.41,9132
+GET /datasets/{id}/eda (1.0M rows),24,1760.05,9132
+GET /datasets/{id}/eda (1.0M rows),25,1739.0,9132
+GET /datasets/{id}/eda (1.0M rows),26,1738.88,9132
+GET /datasets/{id}/eda (1.0M rows),27,1800.13,9132
+GET /datasets/{id}/eda (1.0M rows),28,1824.96,9132
+GET /datasets/{id}/eda (1.0M rows),29,1741.52,9132
+GET /datasets/{id}/eda (1.0M rows),30,1780.36,9132

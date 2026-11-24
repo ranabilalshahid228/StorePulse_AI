@@ -1,0 +1,9 @@
+horizon_days,variant,weights,scored_on,holdout_rows,wape,rmse,bias_pct
+42,lightgbm,"{""lightgbm"": 0.75, ""torch_gru"": 0.25}",validation second half,23415,0.0800863683679262,728.245352268487,0.00834050553194794
+42,torch_gru,"{""lightgbm"": 0.75, ""torch_gru"": 0.25}",validation second half,23415,0.08337153397897278,781.3899551782764,-0.022711817220972465
+42,equal_weight_blend,"{""lightgbm"": 0.75, ""torch_gru"": 0.25}",validation second half,23415,0.07841858270720069,722.3465364430255,-0.0071856558445122605
+42,fitted_blend,"{""lightgbm"": 0.75, ""torch_gru"": 0.25}",validation second half,23415,0.07839564810870525,716.8647649239585,0.0005774248437178386
+30,lightgbm,"{""lightgbm"": 0.0, ""torch_gru"": 1.0}",validation second half,16725,0.09934595489306196,874.2178143477132,0.013894913068631007
+30,torch_gru,"{""lightgbm"": 0.0, ""torch_gru"": 1.0}",validation second half,16725,0.08874663316548866,818.373720485495,-0.02487730161910837
+30,equal_weight_blend,"{""lightgbm"": 0.0, ""torch_gru"": 1.0}",validation second half,16725,0.08870787955361427,803.9689556425819,-0.005491194275238681
+30,fitted_blend,"{""lightgbm"": 0.0, ""torch_gru"": 1.0}",validation second half,16725,0.08874663316548866,818.373720485495,-0.02487730161910837

@@ -1,0 +1,5 @@
+workspace,dataset,role,rows,series,stores,date_min,date_max,status
+Rossmann,Rossmann full (all stores),primary,1017209,1115,,2013-01-01,2015-07-31,ready
+Rossmann,Rossmann subset,primary,4710,5,,2013-01-01,2015-07-31,ready
+synthetic,Synthetic demo,primary,1095,3,,2024-01-01,2024-12-30,ready
+Favorita,Favorita daily sales 2013-2017,primary,3000888,1782,,2013-01-01,2017-08-15,ready

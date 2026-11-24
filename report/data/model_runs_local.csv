@@ -1,0 +1,21 @@
+workspace,dataset,name,family,run_type,status,horizon_days,device,store_scope,wape,rmsse,fit_seconds,validation_start,validation_end
+Rossmann,Rossmann full (all stores),ensemble,ensemble,train,cancelled,42,,all stores,,,,,
+Rossmann,Rossmann full (all stores),torch_gru,torch_gru,train,cancelled,42,,all stores,,,,,
+Rossmann,Rossmann full (all stores),torch_mlp,torch_mlp,train,succeeded,42,cpu,all stores,0.08463894526440134,0.16434330449374626,613.78,2015-06-20,2015-07-31
+Rossmann,Rossmann full (all stores),lightgbm,lightgbm,train,succeeded,42,cpu,all stores,0.08478067220913547,0.16444889585524508,55.38,2015-06-20,2015-07-31
+Rossmann,Rossmann full (all stores),sarima,sarima,train,succeeded,42,cpu,all stores,0.21862178640708158,0.41574321943294695,1694.52,2015-06-20,2015-07-31
+Rossmann,Rossmann full (all stores),arima,arima,train,succeeded,42,cpu,all stores,0.22557629328178858,0.4507817398668236,726.96,2015-06-20,2015-07-31
+Rossmann,Rossmann full (all stores),seasonal_naive,seasonal_naive,train,succeeded,42,cpu,all stores,0.1968656837673444,0.3658798202444221,0.01,2015-06-20,2015-07-31
+Rossmann,Rossmann full (all stores),"GPU GRU h30 (best 30-day, 91.48%)",torch_gru,train,succeeded,30,cuda,all stores,0.08519128413836682,0.16299629516886777,227.3,2015-07-02,2015-07-31
+Rossmann,Rossmann full (all stores),GPU ensemble h42 (OTH im-kigs),ensemble,train,succeeded,42,cuda,all stores,0.08342985658102517,0.16204588501238584,43.87,2015-06-20,2015-07-31
+Rossmann,Rossmann subset,CLI ensemble (import test),ensemble,train,succeeded,42,cpu,all stores,0.07492531907835139,0.14861967206797722,3.21,2015-06-20,2015-07-31
+Rossmann,Rossmann subset,smoke lightgbm,lightgbm,train,succeeded,42,cpu,all stores,0.07810706075247832,0.1575935249169251,0.36,2015-06-20,2015-07-31
+synthetic,Synthetic demo,lightgbm,lightgbm,train,succeeded,42,cpu,all stores,0.0052055623982161375,0.011304695345982253,6.87,2024-11-19,2024-12-30
+synthetic,Synthetic demo,torch_gru,torch_gru,train,succeeded,42,cpu,all stores,0.036568747469155366,0.2963081514901003,11.89,2024-11-19,2024-12-30
+synthetic,Synthetic demo,seasonal_naive,seasonal_naive,train,succeeded,42,cpu,all stores,0.0734603017561217,0.1413175520199542,0.01,2024-11-19,2024-12-30
+synthetic,Synthetic demo,arima,arima,train,succeeded,42,cpu,all stores,0.14767625681560345,0.30254868201723467,1.65,2024-11-19,2024-12-30
+synthetic,Synthetic demo,ensemble,ensemble,train,succeeded,42,cpu,all stores,0.0052055623982161375,0.011304695345982253,24.14,2024-11-19,2024-12-30
+synthetic,Synthetic demo,torch_mlp,torch_mlp,train,succeeded,42,cpu,all stores,0.035557427790144834,0.2964864840873496,6.58,2024-11-19,2024-12-30
+synthetic,Synthetic demo,SARIMA benchmark,sarima,train,succeeded,28,cpu,all stores,0.30973994641256,0.6413326519706575,2.34,2024-12-03,2024-12-30
+synthetic,Synthetic demo,smoke lightgbm,lightgbm,train,succeeded,42,cpu,all stores,0.009373661361632306,0.02080029896932552,2.0,2024-11-19,2024-12-30
+Favorita,Favorita daily sales 2013-2017,LightGBM 28-day (last 2 years),lightgbm,train,succeeded,28,cpu,all stores,0.13071870977950556,0.9401872538524981,85.7,2017-07-19,2017-08-15

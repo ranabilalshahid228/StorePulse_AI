@@ -1,0 +1,8 @@
+endpoint,n,median_ms,p95_ms,max_ms,response_kb
+GET /health/ready,30,3.3,4.7,4.8,0.1
+GET /stores (50),30,9.9,12.3,12.9,25.2
+GET /model-runs,30,7.5,9.0,9.3,35.3
+GET /forecasts/{id}/series,30,17.8,21.4,24.2,5.6
+GET /forecasts/{id}/pnl,30,51.0,67.2,70.5,8.0
+GET /forecasts/{id}/workforce,30,53.7,63.4,63.7,6.3
+GET /datasets/{id}/eda (1.0M rows),30,1743.5,1952.2,1964.1,8.9

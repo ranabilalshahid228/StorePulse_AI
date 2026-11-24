@@ -1,0 +1,29 @@
+[1/4] ingest train.csv
+    converting                49.6%  
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+    1,017,209 rows, 1,115 series in 1.5s
+[2/4] diagnostics
+    score 90/100 issues=['date_gaps', 'outliers']
+[3/4] features
+    759,128 train / 46,830 val rows, 50 features in 10.2s
+[4/4] train + forecast
+    training                 100.0%  epoch 1
+    loading_history            5.0%  
+    building_future_frame     25.0%  
+    predicting                45.0%  
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+    summarizing               90.0%  
+    seasonal_naive  ACC 80.31%  WAPE 0.1969  RMSPE 0.2482  RMSSE 0.3659  RMSE 1682.6  MAE 1181.8  R2 0.7961  fit 0s
+                    interval empirical_relative_residual: P10-P90 cov 0.8279 (holdout 0.7543)  mean pinball 372.6291
+    training                   0.0%  epoch 1
+    loading_history            5.0%  
+    building_future_frame     25.0%  
+    predicting                45.0%  
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+    summarizing               90.0%  
+    lightgbm        ACC 91.52%  WAPE 0.0848  RMSPE 0.1245  RMSSE 0.1644  RMSE 803.3  MAE 508.9  R2 0.9535  fit 48s
+                    interval empirical_relative_residual: P10-P90 cov 0.8279 (holdout 0.8384)  mean pinball 161.9798
+summary -> ..\report\data\raw_runs\local_rossmann_h42.json

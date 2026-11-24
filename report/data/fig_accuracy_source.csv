@@ -1,0 +1,15 @@
+model,horizon,wape,source
+ensemble,42,0.08342985658102517,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git adc082c"
+lightgbm,42,0.08478067220913547,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git adc082c"
+torch_gru,42,0.08857361908382755,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git adc082c"
+torch_mlp,42,0.08719218994287695,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git adc082c"
+arima,30,0.21897026370423373,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git 7854f31"
+ensemble,30,0.08519128413836682,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git 7854f31"
+lightgbm,30,0.09700714973372766,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git 7854f31"
+sarima,30,0.2062442205456163,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git 7854f31"
+torch_gru,30,0.08519128413836682,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git 7854f31"
+torch_mlp,30,0.0854624883401773,"GPU host im-kigs (NVIDIA RTX 6000 Ada Generation), git 7854f31"
+seasonal_naive,42,0.1968656837673444,"local laptop CPU, scripts/run_pipeline.py"
+seasonal_naive,30,0.19535046544154694,"local laptop CPU, scripts/run_pipeline.py"
+arima,42,0.22557629328178858,local app (CPU)
+sarima,42,0.21862178640708158,local app (CPU)
