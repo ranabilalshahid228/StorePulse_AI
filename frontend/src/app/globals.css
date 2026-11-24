@@ -32,6 +32,8 @@
   --chart-3: oklch(0.72 0.15 75);
   --chart-4: oklch(0.6 0.18 20);
   --chart-5: oklch(0.55 0.04 260);
+  --chart-6: oklch(0.6 0.16 310);
+  --chart-7: oklch(0.68 0.12 205);
 }
 
 @media (prefers-color-scheme: dark) {

@@ -402,7 +402,7 @@ keep `models/` and migrations in sync (`alembic check` against a dev DB).
 **Frontend** — App Router, client components for data views; TanStack Query for all server state;
 `lib/api.ts` is the only fetch path (adds JWT, refreshes once on 401, maps the error envelope to
 `ApiError`). Keep `lib/types.ts` in sync with `app/schemas`. Colors only via CSS tokens in `globals.css`
-(charts use `--chart-1..5`). Every data view needs loading, empty and error states.
+(charts use `--chart-1..7`). Every data view needs loading, empty and error states.
 
 **Tests** — add a pytest for every service function with business math (see `tests/test_finance.py`)
 and extend `tests/test_pipeline.py` when touching features/families/forecasting.

@@ -93,7 +93,13 @@ def main() -> int:
         )
         r.raise_for_status()
         c.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+        # smoke_login.txt = latest run; logins.txt keeps every workspace so earlier ones stay reachable.
         (LOCAL / "smoke_login.txt").write_text(f"{email}\n{password}\n")
+        label = "synthetic demo" if args.synthetic else f"Rossmann stores {' '.join(map(str, args.stores))}"
+        with (LOCAL / "logins.txt").open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"{time.strftime('%Y-%m-%d %H:%M')}  {label}\n  email:    {email}\n  password: {password}\n\n"
+            )
 
         print("[2] import store.csv")
         with stores_path.open("rb") as fh:
@@ -235,7 +241,10 @@ def main() -> int:
                 response = c.get(path, headers=headers)
                 if response.status_code != 404:
                     raise SystemExit(f"Expected 404 across workspaces for {path}, got {response.status_code}")
-    print(f"OK - log in to the UI with the account in {LOCAL / 'smoke_login.txt'}")
+    print(
+        f"OK - log in to the UI with the account in {LOCAL / 'smoke_login.txt'}"
+        f" (all runs: {LOCAL / 'logins.txt'})"
+    )
     return 0
 
 

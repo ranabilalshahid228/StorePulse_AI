@@ -49,7 +49,7 @@ export function EpochCurves({ logs }: { logs: Record<string, unknown>[] }) {
               {shown.map((k, i) => (
                 <div key={k}>
                   <p className="mb-1 text-xs font-medium text-muted-foreground">{k}</p>
-                  <TimeSeriesChart data={curve} series={[{ key: k, label: k, color: `var(--chart-${(i % 5) + 1})` }]} height={150} />
+                  <TimeSeriesChart data={curve} series={[{ key: k, label: k, color: `var(--chart-${(i % 7) + 1})` }]} height={150} />
                 </div>
               ))}
             </div>

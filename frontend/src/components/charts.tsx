@@ -50,7 +50,7 @@ export function TimeSeriesChart({ data, series, height = 280 }: { data: object[]
             key={s.key}
             dataKey={s.key}
             name={s.label}
-            stroke={s.color ?? `var(--chart-${(i % 5) + 1})`}
+            stroke={s.color ?? `var(--chart-${(i % 7) + 1})`}
             strokeWidth={1.8}
             strokeDasharray={s.dashed ? "4 3" : undefined}
             dot={false}
@@ -126,7 +126,7 @@ export function SimpleBarChart({
             dataKey={s.key}
             name={s.label}
             stackId={stacked ? "stack" : undefined}
-            fill={s.color ?? `var(--chart-${(i % 5) + 1})`}
+            fill={s.color ?? `var(--chart-${(i % 7) + 1})`}
             radius={stacked && i < series.length - 1 ? [0, 0, 0, 0] : [3, 3, 0, 0]}
           />
         ))}

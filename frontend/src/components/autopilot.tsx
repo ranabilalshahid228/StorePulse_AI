@@ -234,7 +234,7 @@ export function StaffingCard({ res }: { res: AutopilotResult }) {
           data={data}
           xKey="ds"
           stacked
-          series={[...res.shift_names.map((n) => ({ key: `staff_${n}`, label: n })), { key: "surge", label: "Peak cover", color: "var(--chart-3)" }]}
+          series={[...res.shift_names.map((n) => ({ key: `staff_${n}`, label: n })), { key: "surge", label: "Peak cover", color: "var(--chart-4)" }]}
         />
       </CardContent>
     </Card>
