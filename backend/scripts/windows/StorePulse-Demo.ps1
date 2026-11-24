@@ -1,8 +1,9 @@
 # One-click StorePulse demo for presenting (used by the desktop shortcuts).
 #   StorePulse-Demo.ps1            -> app on this laptop, browser opens when ready
 #   StorePulse-Demo.ps1 -Phones    -> same, plus a QR code so phones on the same Wi-Fi can open it
+#   StorePulse-Demo.ps1 -Public    -> same, plus a free public https link + QR code (any network, any phone)
 # Closing: press Ctrl+C in this window (stops the app and the database).
-param([switch]$Phones)
+param([switch]$Phones, [switch]$Public)
 
 $ErrorActionPreference = "Stop"
 $backend = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -27,8 +28,8 @@ if (-not (Test-Path $python)) {
 if (Test-App) {
     Write-Host "StorePulse is already running - opening $url"
     Start-Process $url
-    if ($Phones) {
-        Write-Host "For phones, restart it with this button after stopping the running app (Ctrl+C in its window)."
+    if ($Phones -or $Public) {
+        Write-Host "For phones or a public link, restart it with this button after stopping the running app (Ctrl+C in its window)."
     }
     Start-Sleep -Seconds 4
     exit 0
@@ -51,5 +52,5 @@ Start-Job -ArgumentList $url -ScriptBlock {
 } | Out-Null
 
 Set-Location $backend
-$mode = if ($Phones) { "--lan" } else { "--present" }
+$mode = if ($Public) { "--public" } elseif ($Phones) { "--lan" } else { "--present" }
 & $python -m scripts.local_stack up $mode

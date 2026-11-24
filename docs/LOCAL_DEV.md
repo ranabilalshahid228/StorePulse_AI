@@ -111,7 +111,7 @@ startup window or `.local/logs/api.log`.
 
 ## Presenting StorePulse (demo buttons)
 
-Create two desktop buttons once (from the repo root, in PowerShell):
+Create three desktop buttons once (from the repo root, in PowerShell):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File backend\scripts\windows\create_shortcuts.ps1
@@ -124,8 +124,15 @@ powershell -ExecutionPolicy Bypass -File backend\scripts\windows\create_shortcut
   address and a QR code (window + `.local\demo_qr.png`) lets people in the room open it on their phones.
   Allow Node.js in the Windows firewall prompt the first time (private networks only). The API stays
   bound to 127.0.0.1; phones reach it through the UI's same-origin proxy. Anyone on that Wi-Fi can open
-  the app while it runs, so use demo workspaces only and stop it afterwards.
+  the app while it runs, so use demo workspaces only and stop it afterwards. The QR prefers the Wi-Fi
+  adapter, then Ethernet, and skips VPN / virtual adapters; every candidate address is printed.
+- **StorePulse Demo (public link)** — the same plus `--public`: a free Cloudflare quick tunnel gives an
+  `https://<random-words>.trycloudflare.com` link (and QR code) that works on any network, no account
+  or domain needed. `cloudflared` is downloaded once from Cloudflare's GitHub releases into `.localin`.
+  The link changes on every start and works only while the laptop runs the app. It uses HTTP/2 because
+  networks such as eduroam block the default QUIC/UDP. Anyone with the link reaches the login page, so
+  share it only with your audience and stop the app afterwards.
 
 Stop either one with `Ctrl+C` in its window. Logins for the local workspaces are listed in
 `.local\logins.txt`; the browser remembers a login after the first sign-in.
-No hosting or domain is needed; the QR code only works on the same network as the laptop.
+No hosting or domain is needed; the Wi-Fi QR code only works on the same network as the laptop.

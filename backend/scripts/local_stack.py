@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -28,9 +29,10 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, build_opener, urlopen
 
 BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
@@ -177,12 +179,16 @@ def migrate() -> None:
 # ----------------------------------------------------------------------------------------
 
 
-def _pump(name: str, proc: subprocess.Popen[str], log: Path) -> None:
+def _pump(
+    name: str, proc: subprocess.Popen[str], log: Path, on_line: Callable[[str], None] | None = None
+) -> None:
     with log.open("a", encoding="utf-8") as fh:
         for line in proc.stdout or []:
             fh.write(line)
             fh.flush()
             sys.stdout.write(f"[{name}] {line}")
+            if on_line is not None:
+                on_line(line)
 
 
 def _kill(proc: subprocess.Popen[str]) -> None:
@@ -198,16 +204,84 @@ def _kill(proc: subprocess.Popen[str]) -> None:
             proc.kill()
 
 
-def lan_ip() -> str:
-    """This machine's address on the local network (no packets are sent)."""
+_SKIP_ADAPTERS = (
+    "vpn",
+    "virtual",
+    "vethernet",
+    "loopback",
+    "tailscale",
+    "wsl",
+    "hyper-v",
+    "vmware",
+    "docker",
+)
+
+
+def rank_adapters(addresses: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(adapter name, IPv4) pairs a phone could reach: Wi-Fi first, then Ethernet, VPN/virtual dropped."""
+
+    def rank(alias: str) -> int:
+        a = alias.lower()
+        if any(k in a for k in ("wi-fi", "wifi", "wlan", "wireless")):
+            return 0
+        return 1 if "ethernet" in a else 2
+
+    usable = [
+        (alias, ip)
+        for alias, ip in addresses
+        if not ip.startswith(("127.", "169.254.")) and not any(k in alias.lower() for k in _SKIP_ADAPTERS)
+    ]
+    return sorted(usable, key=lambda pair: rank(pair[0]))
+
+
+def lan_addresses() -> list[tuple[str, str]]:
+    """This machine's addresses on local networks, best first (no packets are sent)."""
+    found: list[tuple[str, str]] = []
+    if IS_WIN:
+        ps = (
+            "Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred | "
+            "ForEach-Object { $_.InterfaceAlias + '|' + $_.IPAddress }"
+        )
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=20
+            ).stdout
+            found = [tuple(line.strip().split("|", 1)) for line in out.splitlines() if "|" in line]  # type: ignore[misc]
+    ranked = rank_adapters(found)
+    if ranked:
+        return ranked
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
             s.connect(("10.255.255.255", 1))
-            return s.getsockname()[0]
+            return [("default route", s.getsockname()[0])]
         except OSError:
-            return "127.0.0.1"
+            return [("loopback", "127.0.0.1")]
+
+
+CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/" + (
+    "cloudflared-windows-amd64.exe" if IS_WIN else "cloudflared-linux-amd64"
+)
+TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+
+def ensure_cloudflared() -> str:
+    """Path to Cloudflare's free tunnel client; downloaded once into .local/bin (official release)."""
+    on_path = shutil.which("cloudflared")
+    if on_path:
+        return on_path
+    exe = LOCAL / "bin" / ("cloudflared.exe" if IS_WIN else "cloudflared")
+    if not exe.exists():
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[tunnel] downloading cloudflared (~60 MB, once) from {CLOUDFLARED_URL}")
+        tmp = exe.with_suffix(".part")
+        with urlopen(CLOUDFLARED_URL, timeout=120) as response, tmp.open("wb") as fh:  # noqa: S310
+            shutil.copyfileobj(response, fh)
+        tmp.replace(exe)
+        if not IS_WIN:
+            exe.chmod(0o755)
+    return str(exe)
 
 
 def ensure_ui_build(env: dict[str, str]) -> None:
@@ -237,7 +311,7 @@ def show_qr(url: str) -> None:
     try:
         import segno
     except ImportError:
-        print(f"  (pip install segno for a QR code) open {url} on a phone on the same Wi-Fi")
+        print(f"  (pip install segno for a QR code) open {url} on the phone")
         return
     qr = segno.make(url, error="m")
     png = LOCAL / "demo_qr.png"
@@ -254,7 +328,7 @@ def up(args: argparse.Namespace) -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    present = args.present or args.lan
+    present = args.present or args.lan or args.public
     db_start()
     migrate()
     env = lean_env()
@@ -295,6 +369,26 @@ def up(args: argparse.Namespace) -> None:
         mode = "start" if present else "dev"
         command = [npm, "run", mode, "--", "--hostname", host, "--port", str(UI_PORT)]
         specs.append(("ui", command, ROOT / "frontend"))
+    shown: list[str] = []
+
+    def announce_tunnel(line: str) -> None:
+        match = TUNNEL_URL.search(line)
+        if match and not shown:
+            shown.append(match.group(0))
+            print(f"\n  Public link (any network, changes every start): {match.group(0)}")
+            show_qr(match.group(0))
+
+    if args.public and not args.no_ui:
+        tunnel = [
+            ensure_cloudflared(),
+            "tunnel",
+            "--no-autoupdate",
+            "--protocol",
+            "http2",
+            "--url",
+            f"http://127.0.0.1:{UI_PORT}",
+        ]
+        specs.append(("tunnel", tunnel, LOCAL))
     for name, cmd, cwd in specs:
         proc = subprocess.Popen(
             cmd,
@@ -307,7 +401,8 @@ def up(args: argparse.Namespace) -> None:
             errors="replace",
         )
         procs[name] = proc
-        threading.Thread(target=_pump, args=(name, proc, LOGS / f"{name}.log"), daemon=True).start()
+        on_line = announce_tunnel if name == "tunnel" else None
+        threading.Thread(target=_pump, args=(name, proc, LOGS / f"{name}.log", on_line), daemon=True).start()
     print(
         f"\nStorePulse local stack (logs in {LOGS}):\n"
         f"  API   http://localhost:{API_PORT}/api/v1/docs\n"
@@ -315,7 +410,10 @@ def up(args: argparse.Namespace) -> None:
         + "Ctrl+C to stop.\n"
     )
     if args.lan and not args.no_ui:
-        url = f"http://{lan_ip()}:{UI_PORT}"
+        addresses = lan_addresses()
+        for alias, ip in addresses:
+            print(f"  On {alias}: http://{ip}:{UI_PORT}")
+        url = f"http://{addresses[0][1]}:{UI_PORT}"
         print(f"  Phones on the same Wi-Fi: {url}  (allow Node.js in the Windows firewall prompt)")
         show_qr(url)
     try:
@@ -413,6 +511,11 @@ def main() -> int:
         "--lan",
         action="store_true",
         help="--present + open the UI to phones on the same Wi-Fi (shows a QR code)",
+    )
+    u.add_argument(
+        "--public",
+        action="store_true",
+        help="--present + free public https link via a Cloudflare quick tunnel (shows a QR code)",
     )
     d = sub.add_parser("db", help="PostgreSQL only")
     d.add_argument("action", choices=["start", "stop", "status", "psql"])

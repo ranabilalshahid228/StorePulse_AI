@@ -1,4 +1,4 @@
-# Put two StorePulse demo buttons on the desktop (run once):
+# Put three StorePulse demo buttons on the desktop (run once):
 #   powershell -ExecutionPolicy Bypass -File backend\scripts\windows\create_shortcuts.ps1
 $launcher = Join-Path $PSScriptRoot "StorePulse-Demo.ps1"
 $backend = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -7,7 +7,8 @@ $shell = New-Object -ComObject WScript.Shell
 
 $buttons = @(
     @{ Name = "StorePulse Demo"; Args = ""; Note = "Start StorePulse and open it in the browser" },
-    @{ Name = "StorePulse Demo (phones on Wi-Fi)"; Args = " -Phones"; Note = "Start StorePulse with a QR code for phones on the same Wi-Fi" }
+    @{ Name = "StorePulse Demo (phones on Wi-Fi)"; Args = " -Phones"; Note = "Start StorePulse with a QR code for phones on the same Wi-Fi" },
+    @{ Name = "StorePulse Demo (public link)"; Args = " -Public"; Note = "Start StorePulse with a free public link + QR code that works on any network" }
 )
 foreach ($b in $buttons) {
     $lnk = $shell.CreateShortcut((Join-Path $desktop "$($b.Name).lnk"))
