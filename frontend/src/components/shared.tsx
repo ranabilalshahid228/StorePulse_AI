@@ -7,10 +7,10 @@ import { Badge, Card, CardContent, Progress } from "@/components/ui/primitives";
 
 export function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: ReactNode }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-border/60 pb-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-        {description ? <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{description}</p> : null}
+        <h1 className="text-2xl font-semibold sm:text-[1.75rem]">{title}</h1>
+        {description ? <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">{description}</p> : null}
       </div>
       {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
     </div>
@@ -19,8 +19,8 @@ export function PageHeader({ title, description, actions }: { title: string; des
 
 export function EmptyState({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-6 py-12 text-center">
-      <Inbox className="size-6 text-muted-foreground" />
+    <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-input bg-card/40 px-6 py-12 text-center">
+      <Inbox aria-hidden className="size-6 text-primary/80" />
       <p className="text-sm font-medium">{title}</p>
       {description ? <p className="max-w-sm text-xs text-muted-foreground">{description}</p> : null}
       {action ? <div className="mt-2">{action}</div> : null}
@@ -37,7 +37,7 @@ export function ErrorNotice({ error }: { error: unknown }) {
   } | undefined : undefined;
   const issues = Array.isArray(details?.errors) ? details.errors : [];
   return (
-    <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+    <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
       <AlertTriangle className="mt-0.5 size-4 shrink-0" />
       <div>
         <p>{msg}</p>
@@ -93,7 +93,7 @@ export function Kpi({ label, value, sub }: { label: string; value: ReactNode; su
     <Card>
       <CardContent className="p-5">
         <p className="text-xs font-medium text-muted-foreground">{label}</p>
-        <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
+        <p className="mt-2 font-[family-name:var(--font-bricolage)] text-3xl font-semibold tracking-tight tabular-nums">{value}</p>
         {sub ? <p className="mt-1 text-xs text-muted-foreground">{sub}</p> : null}
       </CardContent>
     </Card>

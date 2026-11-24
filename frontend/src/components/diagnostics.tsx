@@ -103,7 +103,7 @@ export function NeuralDiagnostics({ run }: { run: ModelRunDetail }) {
                     <TR key={d.dow}>
                       <TD>{d.dow}</TD>
                       <TD className="text-right tabular-nums">{formatPct(d.wape, 1)}</TD>
-                      <TD className={cn("text-right tabular-nums", Math.abs(d.bias_pct ?? 0) > 0.03 && "font-medium text-[oklch(0.5_0.12_70)]")}>
+                      <TD className={cn("text-right tabular-nums", Math.abs(d.bias_pct ?? 0) > 0.03 && "font-medium text-warning")}>
                         {d.bias_pct !== null ? `${d.bias_pct >= 0 ? "+" : ""}${formatPct(d.bias_pct, 1)}` : "—"}
                       </TD>
                       <TD className="text-right tabular-nums text-muted-foreground">{formatNumber(d.n)}</TD>

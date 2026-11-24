@@ -7,6 +7,7 @@ import { ArrowUpRight, CalendarDays, ChartNoAxesCombined, Download, Package, Tre
 
 import { ForecastBandChart } from "@/components/charts";
 import { EmptyState, ErrorNotice, JobProgress } from "@/components/shared";
+import { StormBolt } from "@/components/storm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Select } from "@/components/ui/primitives";
 import { useDataset, useModelRuns, useStores } from "@/hooks/queries";
@@ -59,10 +60,11 @@ export default function ForecastsPage() {
 
   return (
     <div className="space-y-6">
-      <section className="forecast-hero relative isolate overflow-hidden rounded-2xl bg-hero px-6 py-10 text-hero-foreground sm:px-9 sm:py-14">
+      <section className="forecast-hero relative isolate overflow-hidden rounded-2xl border border-primary/20 bg-hero px-6 py-10 text-hero-foreground shadow-[0_20px_60px_-30px_var(--glow)] sm:px-9 sm:py-14">
+        <StormBolt className="absolute -top-4 right-[6%] h-[115%] w-auto max-sm:right-[-22%] max-sm:opacity-30" />
         <div className="relative max-w-xl motion-safe:animate-[forecast-enter_450ms_ease-out_both]">
           <ChartNoAxesCombined aria-hidden className="mb-5 size-7 text-hero-accent" />
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-5xl">Sales forecasts</h1>
+          <h1 className="text-4xl font-semibold sm:text-6xl">Sales forecasts</h1>
           <p className="mt-3 max-w-md text-sm leading-relaxed text-hero-foreground/85 sm:text-base">
             See expected demand and the products forecast to lead over the next day, week, or month.
           </p>

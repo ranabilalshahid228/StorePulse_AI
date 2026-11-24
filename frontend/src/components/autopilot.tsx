@@ -370,7 +370,7 @@ export function ShiftRoster({ res }: { res: AutopilotResult }) {
                   {res.shift_names.map((n) => {
                     const s = shifts[n];
                     return (
-                      <TD key={n} className={cn("text-right tabular-nums", s?.status === "understaffed" && "text-destructive", s?.status === "overstaffed" && "text-[oklch(0.5_0.12_70)]")}>
+                      <TD key={n} className={cn("text-right tabular-nums", s?.status === "understaffed" && "text-destructive", s?.status === "overstaffed" && "text-warning")}>
                         {s ? s.headcount : 0}
                         {detail && s && s.hours ? (
                           <span className="block text-[11px] text-muted-foreground">

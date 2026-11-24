@@ -1,54 +1,44 @@
 @import "tailwindcss";
 
-/* shadcn/ui-style design tokens (light + dark). Charts read --chart-* tokens. */
+/* Storm theme: night-sky navy surfaces, electric-blue actions, violet second accent.
+   One theme in every colour scheme (the storm is the identity); charts read --chart-1..7. */
 :root {
-  --radius: 0.6rem;
-  --background: oklch(0.985 0.002 247);
-  --foreground: oklch(0.21 0.03 265);
-  --card: oklch(1 0 0);
+  color-scheme: dark;
+  --radius: 0.7rem;
+  --background: oklch(0.155 0.035 266);
+  --foreground: oklch(0.95 0.012 255);
+  --card: oklch(0.2 0.04 266);
   --card-foreground: var(--foreground);
-  --muted: oklch(0.965 0.005 247);
-  --muted-foreground: oklch(0.52 0.03 257);
-  --border: oklch(0.92 0.008 255);
-  --input: var(--border);
-  --primary: oklch(0.45 0.13 168);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.955 0.01 168);
-  --secondary-foreground: oklch(0.3 0.08 168);
-  --destructive: oklch(0.58 0.21 27);
-  --warning: oklch(0.75 0.15 75);
-  --success: oklch(0.6 0.14 155);
-  /* Photo header on /forecasts: dark green scrim, light text (same in both themes). */
-  --hero: oklch(0.26 0.04 170);
-  --hero-foreground: oklch(0.97 0.02 165);
-  --hero-accent: oklch(0.85 0.13 162);
-  --ring: oklch(0.55 0.12 168);
-  --sidebar: oklch(0.2 0.025 260);
-  --sidebar-foreground: oklch(0.9 0.01 260);
-  --sidebar-muted: oklch(0.65 0.02 260);
-  --sidebar-active: oklch(0.29 0.03 260);
-  --chart-1: oklch(0.55 0.13 168);
-  --chart-2: oklch(0.62 0.15 250);
-  --chart-3: oklch(0.72 0.15 75);
-  --chart-4: oklch(0.6 0.18 20);
-  --chart-5: oklch(0.55 0.04 260);
-  --chart-6: oklch(0.6 0.16 310);
-  --chart-7: oklch(0.68 0.12 205);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --background: oklch(0.17 0.02 262);
-    --foreground: oklch(0.95 0.005 255);
-    --card: oklch(0.21 0.022 262);
-    --muted: oklch(0.25 0.02 262);
-    --muted-foreground: oklch(0.7 0.02 257);
-    --border: oklch(0.3 0.02 262);
-    --secondary: oklch(0.28 0.04 168);
-    --secondary-foreground: oklch(0.9 0.05 168);
-    --sidebar: oklch(0.14 0.02 262);
-    --sidebar-active: oklch(0.24 0.025 262);
-  }
+  --muted: oklch(0.255 0.045 266);
+  --muted-foreground: oklch(0.76 0.03 258);
+  --border: oklch(0.32 0.05 268);
+  --input: oklch(0.36 0.05 268);
+  --primary: oklch(0.8 0.14 232);
+  --primary-foreground: oklch(0.18 0.05 262);
+  --secondary: oklch(0.3 0.08 285);
+  --secondary-foreground: oklch(0.9 0.06 285);
+  --accent-violet: oklch(0.7 0.17 290);
+  --destructive: oklch(0.68 0.19 22);
+  --warning: oklch(0.82 0.14 80);
+  --success: oklch(0.78 0.15 160);
+  /* Photo header on /forecasts: storm-navy scrim, light text. */
+  --hero: oklch(0.17 0.05 270);
+  --hero-foreground: oklch(0.97 0.015 250);
+  --hero-accent: oklch(0.84 0.13 228);
+  --ring: oklch(0.8 0.14 232);
+  --glow: oklch(0.8 0.14 232 / 0.35);
+  --glow-violet: oklch(0.7 0.17 290 / 0.3);
+  --sidebar: oklch(0.13 0.035 268);
+  --sidebar-foreground: oklch(0.93 0.015 258);
+  --sidebar-muted: oklch(0.74 0.03 260);
+  --sidebar-active: oklch(0.22 0.05 268);
+  --chart-1: oklch(0.8 0.14 232);
+  --chart-2: oklch(0.7 0.17 290);
+  --chart-3: oklch(0.82 0.14 80);
+  --chart-4: oklch(0.68 0.19 22);
+  --chart-5: oklch(0.66 0.03 260);
+  --chart-6: oklch(0.78 0.15 160);
+  --chart-7: oklch(0.76 0.15 340);
 }
 
 @theme inline {
@@ -75,10 +65,12 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-muted: var(--sidebar-muted);
   --color-sidebar-active: var(--sidebar-active);
+  --color-accent-violet: var(--accent-violet);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
 * {
@@ -95,21 +87,102 @@
 }
 
 body {
-  background: var(--background);
+  /* Two faint storm-cloud glows over the night sky; fixed so long pages don't stretch them. */
+  background:
+    radial-gradient(60rem 32rem at 85% -10%, oklch(0.7 0.17 290 / 0.1), transparent 70%),
+    radial-gradient(50rem 30rem at 10% -5%, oklch(0.8 0.14 232 / 0.08), transparent 70%),
+    var(--background);
+  background-attachment: fixed;
   color: var(--foreground);
   font-feature-settings: "tnum" 1, "cv11" 1;
+  line-height: 1.55;
+}
+
+h1, h2 {
+  font-family: var(--font-bricolage), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: oklch(0.8 0.14 232 / 0.35);
+}
+
+/* Keyboard focus: an electric outline on every focusable element (base layer, so a component's own
+   focus-visible:ring utilities still apply on top). */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* Cards: a faint lit edge along the top, like cloud tops catching light. */
+.storm-card {
+  background-image: linear-gradient(180deg, oklch(1 0 0 / 0.035), transparent 40%);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.05), 0 8px 24px -16px oklch(0.05 0.03 266 / 0.8);
+}
+
+/* Charged edge: a thin blue-to-violet line (sidebar edge, active nav item). */
+.charged-edge {
+  position: relative;
+}
+.charged-edge::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--primary) 30%, var(--accent-violet) 70%, transparent);
+  box-shadow: 0 0 12px var(--glow);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Lightning bolt: decorative, glows slowly (never flashes), still when reduced motion is requested. */
+.storm-bolt {
+  filter: drop-shadow(0 0 6px var(--glow)) drop-shadow(0 0 18px var(--glow-violet));
+  opacity: 0.75;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .storm-bolt {
+    animation: storm-charge 7s ease-in-out infinite;
+  }
+}
+@keyframes storm-charge {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 .forecast-hero {
   background-image: linear-gradient(
       90deg,
       color-mix(in oklch, var(--hero) 97%, transparent),
-      color-mix(in oklch, var(--hero) 82%, transparent) 52%,
-      color-mix(in oklch, var(--hero) 35%, transparent)
+      color-mix(in oklch, var(--hero) 85%, transparent) 52%,
+      color-mix(in oklch, var(--hero) 45%, transparent)
     ),
+    radial-gradient(40rem 20rem at 90% 0%, var(--glow-violet), transparent 70%),
     url("/retail-forecast.webp");
   background-position: center;
   background-size: cover;
+}
+
+/* Phones: the headline spans the full width, so darken the whole photo for contrast. */
+@media (max-width: 639px) {
+  .forecast-hero {
+    background-image: linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--hero) 92%, transparent),
+        color-mix(in oklch, var(--hero) 80%, transparent)
+      ),
+      url("/retail-forecast.webp");
+  }
 }
 
 @keyframes forecast-enter {

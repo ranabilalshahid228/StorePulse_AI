@@ -2,12 +2,13 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { BarChart3 } from "lucide-react";
+import { Zap } from "lucide-react";
 import { api, tokens } from "@/lib/api";
 import type { TokenPair } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, Field, Input } from "@/components/ui/primitives";
 import { ErrorNotice } from "@/components/shared";
+import { StormBolt } from "@/components/storm";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -40,18 +41,21 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-sidebar px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center justify-center gap-2 text-white">
-          <div className="flex size-8 items-center justify-center rounded-md bg-primary">
-            <BarChart3 className="size-4" />
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10">
+      <StormBolt className="absolute -top-6 right-[8%] h-[70vh] max-h-[560px] w-auto opacity-60 max-sm:right-[-12%]" />
+      <StormBolt className="absolute bottom-[-8%] left-[4%] h-[38vh] max-h-[300px] w-auto -scale-x-100 opacity-40 max-sm:hidden" />
+      <div className="relative w-full max-w-sm">
+        <div className="mb-8 text-center">
+          <div className="mb-4 inline-flex size-11 items-center justify-center rounded-lg bg-primary shadow-[0_0_28px_var(--glow)]">
+            <Zap aria-hidden className="size-5 fill-primary-foreground text-primary-foreground" />
           </div>
-          <span className="text-lg font-semibold">StorePulse AI</span>
+          <p className="font-[family-name:var(--font-bricolage)] text-2xl font-semibold tracking-tight">StorePulse AI</p>
+          <p className="mt-1 text-sm text-muted-foreground">Forecast demand and plan every store day.</p>
         </div>
-        <Card>
-          <CardContent className="p-6">
-            <h1 className="mb-1 text-base font-semibold">{mode === "login" ? "Sign in" : "Create your workspace"}</h1>
-            <p className="mb-5 text-xs text-muted-foreground">
+        <Card className="bg-card/85 backdrop-blur">
+          <CardContent className="p-6 sm:p-7">
+            <h1 className="mb-1 text-xl font-semibold">{mode === "login" ? "Sign in" : "Create your workspace"}</h1>
+            <p className="mb-6 text-sm text-muted-foreground">
               {mode === "login" ? "Welcome back." : "You'll be the owner of a new organization."}
             </p>
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
@@ -83,7 +87,8 @@ export default function LoginPage() {
               </Button>
             </form>
             <button
-              className="mt-4 w-full text-center text-xs text-muted-foreground hover:text-foreground"
+              type="button"
+              className="mt-5 w-full rounded-sm text-center text-sm text-muted-foreground transition-colors duration-150 hover:text-primary"
               onClick={() => setMode(mode === "login" ? "register" : "login")}
             >
               {mode === "login" ? "New here? Create a workspace" : "Already have an account? Sign in"}

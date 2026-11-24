@@ -4,16 +4,16 @@ import { cn } from "@/lib/utils";
 
 /* ---- Card ------------------------------------------------------------------------- */
 export function Card({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("rounded-lg border bg-card text-card-foreground shadow-xs", className)} {...p} />;
+  return <div className={cn("storm-card rounded-lg border bg-card text-card-foreground", className)} {...p} />;
 }
 export function CardHeader({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("flex flex-col gap-1 p-5 pb-3", className)} {...p} />;
 }
 export function CardTitle({ className, ...p }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("text-sm font-semibold tracking-tight", className)} {...p} />;
+  return <h3 className={cn("text-[0.95rem] font-semibold tracking-tight", className)} {...p} />;
 }
 export function CardDescription({ className, ...p }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("text-xs text-muted-foreground", className)} {...p} />;
+  return <p className={cn("text-xs leading-relaxed text-muted-foreground", className)} {...p} />;
 }
 export function CardContent({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("p-5 pt-0", className)} {...p} />;
@@ -25,9 +25,9 @@ const badgeVariants = cva("inline-flex items-center rounded-full px-2 py-0.5 tex
     tone: {
       neutral: "bg-muted text-muted-foreground",
       success: "bg-success/15 text-success",
-      warning: "bg-warning/20 text-[oklch(0.5_0.12_70)]",
+      warning: "bg-warning/15 text-warning",
       danger: "bg-destructive/15 text-destructive",
-      info: "bg-secondary text-secondary-foreground",
+      info: "bg-primary/15 text-primary",
     },
   },
   defaultVariants: { tone: "neutral" },
@@ -42,7 +42,7 @@ export function Badge({
 
 /* ---- Form controls ---------------------------------------------------------------- */
 const control =
-  "h-9 w-full rounded-md border bg-card px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+  "h-9 w-full rounded-md border border-input bg-background/60 px-3 text-sm outline-none transition-[border-color,box-shadow] duration-150 hover:border-primary/50 focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50 aria-[invalid=true]:border-destructive";
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...p }, ref) => <input ref={ref} className={cn(control, "file:mr-3 file:border-0 file:bg-transparent file:text-sm file:font-medium", className)} {...p} />,
@@ -79,7 +79,10 @@ export function Progress({ value, className }: { value: number; className?: stri
       aria-valuemin={0}
       aria-valuemax={100}
     >
-      <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${v}%` }} />
+      <div
+        className="h-full rounded-full bg-linear-to-r from-primary to-accent-violet shadow-[0_0_10px_var(--glow)] transition-[width] duration-500"
+        style={{ width: `${v}%` }}
+      />
     </div>
   );
 }
@@ -93,13 +96,13 @@ export function Table({ className, ...p }: React.TableHTMLAttributes<HTMLTableEl
   );
 }
 export function THead(p: React.HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className="border-b text-left text-xs text-muted-foreground" {...p} />;
+  return <thead className="border-b text-left text-xs font-medium text-muted-foreground" {...p} />;
 }
 export function TH({ className, ...p }: React.ThHTMLAttributes<HTMLTableCellElement>) {
   return <th className={cn("px-3 py-2 font-medium whitespace-nowrap", className)} {...p} />;
 }
 export function TR({ className, ...p }: React.HTMLAttributes<HTMLTableRowElement>) {
-  return <tr className={cn("border-b last:border-0 hover:bg-muted/50", className)} {...p} />;
+  return <tr className={cn("border-b transition-colors duration-150 last:border-0 hover:bg-muted/50", className)} {...p} />;
 }
 export function TD({ className, ...p }: React.TdHTMLAttributes<HTMLTableCellElement>) {
   return <td className={cn("px-3 py-2.5 whitespace-nowrap", className)} {...p} />;
