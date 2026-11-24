@@ -24,11 +24,11 @@ Packages: IEEEtran, cite, amsmath, graphicx, booktabs, multirow, xcolor, tikz (a
 positioning, shapes), listings, xurl, hyperref, cleveref, balance; under XeLaTeX fontspec with the
 TeX Gyre Termes font files, under pdfLaTeX newtxtext.
 
-## Placeholders to fill in
+## Metadata
 
-Red text in the PDF. Edit the macros at the top of `main.tex`:
-`\Program` (course / degree programme), `\Supervisor`, `\Campus` (faculty and campus).
-The IEEE conference template has no logo slot, so no university logo is included in the report.
+Author, course (Mathematics of Business and Industry), supervisor (Prof. Dr. Stefanie Vogl) and
+university are set by the macros at the top of `main.tex`. The IEEE conference template has no logo
+slot, so the university logo appears only on the presentation's title slide.
 
 ## Evidence and how to regenerate it
 

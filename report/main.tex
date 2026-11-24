@@ -27,14 +27,13 @@
 \usepackage[capitalise,nameinlink]{cleveref}
 \usepackage{balance}
 
-% ---------- Metadata (replace the red placeholders) -------------------------------------------------
-\newcommand{\placeholder}[1]{\textcolor{red}{[#1]}}
+% ---------- Metadata ---------------------------------------------------------------------------------
 \newcommand{\ProjectTitle}{StorePulse AI: A Multi-Tenant Platform for Leakage-Free Retail Demand Forecasting and Store-Level Operational Planning}
 \newcommand{\AuthorName}{Bilal Shahid}
-\newcommand{\Program}{\placeholder{Course / degree programme}}
-\newcommand{\Supervisor}{\placeholder{Supervisor name}}
+\newcommand{\Program}{Mathematics of Business and Industry}
+\newcommand{\Supervisor}{Prof.\ Dr.\ Stefanie Vogl}
 \newcommand{\University}{Ostbayerische Technische Hochschule Regensburg (OTH Regensburg)}
-\newcommand{\Campus}{\placeholder{Faculty and campus}}
+\newcommand{\Campus}{Regensburg, Germany}
 
 \lstset{basicstyle=\ttfamily\scriptsize,breaklines=true,columns=fullflexible,frame=single,
   backgroundcolor=\color{gray!6},rulecolor=\color{gray!40}}
@@ -739,6 +738,12 @@ SARIMA baselines (best WAPE 8.34\,\% at 42 days and 8.52\,\% at 30 days), their 
 cover 77--84\,\% of unseen days, and the platform responds interactively on a laptop. The main open
 questions concern robustness across time and data sets and the real-world value of the generated
 plans.
+
+\section*{Use of AI Tools}
+Claude Code (Anthropic) was used as an assistant throughout this project: for implementing and
+debugging parts of the software, running and documenting the experiments, generating the charts,
+and drafting the report and presentation text. All results were produced by the project's own code
+and data, and I reviewed, verified and take responsibility for the final content.
 
 \balance
 \bibliographystyle{IEEEtran}
