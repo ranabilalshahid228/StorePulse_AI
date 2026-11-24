@@ -96,3 +96,29 @@ def test_forecast_product_ranking_aggregates_skus(tmp_path: Path) -> None:
     assert [(item.item_id, item.forecast) for item in result.products] == [("A", 7), ("C", 7), ("B", 6)]
     pd.DataFrame({"item_id": [None, ""], "yhat": [7.0, 10.0]}).to_parquet(path)
     assert rank_products(path).products == []
+
+
+def test_cancelled_job_is_not_restarted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job cancelled while queued must stay cancelled: start() must not overwrite it."""
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    from app.workers import progress as progress_mod
+    from app.workers import tasks
+
+    session = MagicMock()
+    session.execute.return_value.rowcount = 0  # the WHERE status != 'cancelled' matched nothing
+
+    @contextmanager
+    def fake_session():  # noqa: ANN202
+        yield session
+
+    monkeypatch.setattr(progress_mod, "sync_session", fake_session)
+    reporter = progress_mod.ProgressReporter(ModelRun, uuid.uuid4())
+    assert reporter.start() is False
+    statement = session.execute.call_args.args[0].compile()
+    assert "model_runs.status !=" in str(statement)
+
+    monkeypatch.setattr(tasks.ProgressReporter, "start", lambda self, *a, **k: False)
+    monkeypatch.setattr(tasks, "_load_run", lambda rid: (_ for _ in ()).throw(AssertionError("must not run")))
+    assert tasks.train_model(str(uuid.uuid4())) == {"cancelled": True}

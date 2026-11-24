@@ -108,3 +108,24 @@ With the stack running, open a second terminal in `backend/` and run
 The command checks backend readiness, whether the product forecast route is registered, and whether
 the UI can reach the API through its local proxy. When a check fails, look at the first error in the
 startup window or `.local/logs/api.log`.
+
+## Presenting StorePulse (demo buttons)
+
+Create two desktop buttons once (from the repo root, in PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File backend\scripts\windows\create_shortcuts.ps1
+```
+
+- **StorePulse Demo** — starts the database, API, worker and a fast production UI
+  (`local_stack up --present`; the UI is rebuilt only when the code changed) and opens the browser when
+  it is ready. If the app is already running it just opens the browser.
+- **StorePulse Demo (phones on Wi-Fi)** — the same plus `--lan`: the UI listens on the laptop's Wi-Fi
+  address and a QR code (window + `.local\demo_qr.png`) lets people in the room open it on their phones.
+  Allow Node.js in the Windows firewall prompt the first time (private networks only). The API stays
+  bound to 127.0.0.1; phones reach it through the UI's same-origin proxy. Anyone on that Wi-Fi can open
+  the app while it runs, so use demo workspaces only and stop it afterwards.
+
+Stop either one with `Ctrl+C` in its window. Logins for the local workspaces are listed in
+`.local\logins.txt`; the browser remembers a login after the first sign-in.
+No hosting or domain is needed; the QR code only works on the same network as the laptop.

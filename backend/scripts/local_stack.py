@@ -18,6 +18,7 @@ PostgreSQL 16 comes from the `pgserver` wheel's bundled binaries inside backend/
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import secrets
@@ -197,14 +198,68 @@ def _kill(proc: subprocess.Popen[str]) -> None:
             proc.kill()
 
 
+def lan_ip() -> str:
+    """This machine's address on the local network (no packets are sent)."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0]
+        except OSError:
+            return "127.0.0.1"
+
+
+def ensure_ui_build(env: dict[str, str]) -> None:
+    """Production build of the UI for presenting; rebuilt only when sources or the API URL changed."""
+    frontend = ROOT / "frontend"
+    stamp = LOCAL / "ui_build.json"
+    newest = max(
+        f.stat().st_mtime for d in ("src", "public") for f in (frontend / d).rglob("*") if f.is_file()
+    )
+    newest = max(newest, *(f.stat().st_mtime for f in frontend.glob("*.*") if f.is_file()))
+    want = {"api_url": env["NEXT_PUBLIC_API_URL"], "sources": round(newest)}
+    try:
+        current = json.loads(stamp.read_text()) if (frontend / ".next" / "BUILD_ID").exists() else None
+    except (OSError, ValueError):
+        current = None
+    if current == want:
+        return
+    print("[ui] building the production UI (once per code change, ~1 min) ...")
+    npm = "npm.cmd" if IS_WIN else "npm"
+    if subprocess.run([npm, "run", "build"], cwd=frontend, env=env).returncode:
+        raise SystemExit("UI build failed - see the output above")
+    stamp.write_text(json.dumps(want))
+
+
+def show_qr(url: str) -> None:
+    """Print a QR code for `url` and save it as .local/demo_qr.png (opened on Windows)."""
+    try:
+        import segno
+    except ImportError:
+        print(f"  (pip install segno for a QR code) open {url} on a phone on the same Wi-Fi")
+        return
+    qr = segno.make(url, error="m")
+    png = LOCAL / "demo_qr.png"
+    qr.save(png, scale=12, border=2)
+    with contextlib.suppress(UnicodeEncodeError):  # consoles without block characters
+        qr.terminal(compact=True)
+    print(f"  Scan to open {url}  (QR image: {png})")
+    if IS_WIN:
+        os.startfile(png)  # type: ignore[attr-defined]
+
+
 def up(args: argparse.Namespace) -> None:
     # Windows consoles default to cp1252; child output (e.g. Next.js "▲") must never kill the pumps.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    present = args.present or args.lan
     db_start()
     migrate()
     env = lean_env()
+    if present and not args.no_ui:
+        ensure_ui_build(env)
     py = sys.executable
     procs: dict[str, subprocess.Popen[str]] = {}
     specs: list[tuple[str, list[str], Path]] = [
@@ -236,7 +291,9 @@ def up(args: argparse.Namespace) -> None:
         )
     if not args.no_ui:
         npm = "npm.cmd" if IS_WIN else "npm"
-        command = [npm, "run", "dev", "--", "--hostname", "127.0.0.1", "--port", str(UI_PORT)]
+        host = "0.0.0.0" if args.lan else "127.0.0.1"
+        mode = "start" if present else "dev"
+        command = [npm, "run", mode, "--", "--hostname", host, "--port", str(UI_PORT)]
         specs.append(("ui", command, ROOT / "frontend"))
     for name, cmd, cwd in specs:
         proc = subprocess.Popen(
@@ -257,6 +314,10 @@ def up(args: argparse.Namespace) -> None:
         + (f"  UI    http://localhost:{UI_PORT}\n" if not args.no_ui else "")
         + "Ctrl+C to stop.\n"
     )
+    if args.lan and not args.no_ui:
+        url = f"http://{lan_ip()}:{UI_PORT}"
+        print(f"  Phones on the same Wi-Fi: {url}  (allow Node.js in the Windows firewall prompt)")
+        show_qr(url)
     try:
         while all(p.poll() is None for p in procs.values()):
             time.sleep(1)
@@ -347,6 +408,12 @@ def main() -> int:
     u.add_argument("--no-ui", action="store_true")
     u.add_argument("--no-worker", action="store_true")
     u.add_argument("--keep-db", action="store_true", help="leave PostgreSQL running after Ctrl+C")
+    u.add_argument("--present", action="store_true", help="fast production UI for demos (builds when needed)")
+    u.add_argument(
+        "--lan",
+        action="store_true",
+        help="--present + open the UI to phones on the same Wi-Fi (shows a QR code)",
+    )
     d = sub.add_parser("db", help="PostgreSQL only")
     d.add_argument("action", choices=["start", "stop", "status", "psql"])
     sub.add_parser("doctor", help="check API health, product forecasts and the frontend API route")

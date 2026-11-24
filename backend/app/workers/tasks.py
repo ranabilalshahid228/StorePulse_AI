@@ -213,7 +213,9 @@ def train_model(run_id: str) -> dict:
 
     rid = uuid.UUID(run_id)
     progress = ProgressReporter(ModelRun, rid)
-    progress.start()
+    if not progress.start():
+        logger.info("Skipping cancelled job %s", rid)
+        return {"cancelled": True}
     try:
         ctx = _load_run(rid)
         result = training.train(
@@ -244,7 +246,9 @@ def tune_model(run_id: str, metric: str = "wape", timeout_s: int | None = None) 
 
     rid = uuid.UUID(run_id)
     progress = ProgressReporter(ModelRun, rid)
-    progress.start()
+    if not progress.start():
+        logger.info("Skipping cancelled job %s", rid)
+        return {"cancelled": True}
     try:
         ctx = _load_run(rid)
         result = training.tune(
@@ -288,7 +292,9 @@ def run_forecast(forecast_id: str) -> dict:
 
     fid = uuid.UUID(forecast_id)
     progress = ProgressReporter(ForecastRun, fid)
-    progress.start()
+    if not progress.start():
+        logger.info("Skipping cancelled job %s", fid)
+        return {"cancelled": True}
     try:
         with sync_session() as s:
             fr = s.get(ForecastRun, fid)
@@ -394,7 +400,9 @@ def run_autopilot(autopilot_id: str) -> dict:
 
     aid = uuid.UUID(autopilot_id)
     progress = ProgressReporter(AutopilotRun, aid)
-    progress.start()
+    if not progress.start():
+        logger.info("Skipping cancelled job %s", aid)
+        return {"cancelled": True}
     try:
         with sync_session() as s:
             ap = s.get(AutopilotRun, aid)

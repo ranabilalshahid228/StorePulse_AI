@@ -32,11 +32,26 @@ class ProgressReporter:
             s.execute(update(self.model).where(self.model.id == self.obj_id).values(**values))
         self._last_write = time.monotonic()
 
-    def start(self, stage: str = "starting", running_status: str = JobStatus.RUNNING.value) -> None:
-        self._write(
-            status=running_status, stage=stage, progress_pct=self.lo, started_at=datetime.now(UTC), error=None
-        )
+    def start(self, stage: str = "starting", running_status: str = JobStatus.RUNNING.value) -> bool:
+        """Mark the job running. Returns False - and changes nothing - when it was cancelled while queued,
+        so the caller can skip it (a plain update would overwrite the cancellation)."""
+        with sync_session() as s:
+            result = s.execute(
+                update(self.model)
+                .where(self.model.id == self.obj_id, self.model.status != JobStatus.CANCELLED.value)
+                .values(
+                    status=running_status,
+                    stage=stage,
+                    progress_pct=self.lo,
+                    started_at=datetime.now(UTC),
+                    error=None,
+                )
+            )
+        self._last_write = time.monotonic()
+        if not result.rowcount:
+            return False
         self._last_stage = stage
+        return True
 
     def update(self, fraction: float, stage: str, message: str | None = None, force: bool = False) -> None:
         """`fraction` in [0, 1] is mapped into this reporter's percentage span."""
