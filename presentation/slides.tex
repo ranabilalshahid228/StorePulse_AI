@@ -74,18 +74,19 @@ no-code pipeline, P\&L and workforce planning, no mock data, GPU training and ex
 % ---------------------------------------------------------------------------------------------------
 \begin{frame}{Research question}
 \begin{block}{RQ (formulated for this report)}
-Can a platform built from standard open components deliver store-level daily forecasts that are
-\alert{substantially more accurate} than classical baselines, with \alert{calibrated uncertainty} and
-\alert{interactive response times}, so that they can drive store planning?
+With \alert{no test data used for model selection}, does a global gradient-boosted model forecast
+daily store sales \alert{significantly} better than the seasonal-naive benchmark across forecast
+origins --- and can its forecasts give \alert{cheaper staffing plans} without more understaffing?
 \end{block}
 \vspace{4pt}
 \begin{columns}[T]
-\column{0.32\textwidth}\textbf{RQ1 Accuracy}\\\small Error vs.\ seasonal naive, ARIMA, SARIMA on the same window
-\column{0.32\textwidth}\textbf{RQ2 Uncertainty}\\\small Do P10--P90 bands cover $\approx$80\,\% of unseen days?
-\column{0.32\textwidth}\textbf{RQ3 Operability}\\\small Latency, job time, reproducibility on commodity hardware
+\column{0.32\textwidth}\textbf{H1 Accuracy over time}\\\small 8 rolling 28-day origins; Diebold--Mariano and sign test
+\column{0.32\textwidth}\textbf{H2 Model differences}\\\small Ensemble, MLP, GRU vs.\ LightGBM; DM test and store bootstrap
+\column{0.32\textwidth}\textbf{H3 Planning}\\\small Integer program vs.\ rule plan, judged against realised footfall
 \end{columns}
-\note{Stress that the project documents state goals but no research question; this RQ was formulated
-for the evaluation so it can be answered with evidence.}
+\note{The project documents state goals but no research question. This RQ is phrased so each part
+ends in a test or an optimisation result. Key phrase: no test data used for model selection, which
+is why the backtest chooses the number of boosting rounds on the 28 days before each test window.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
@@ -130,34 +131,6 @@ lean local stack uses PostgreSQL as the queue, so no Redis or Docker is needed o
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
-\begin{frame}{Workflow: from upload to plan}
-\centering
-\begin{tikzpicture}[
-  st/.style={draw, rounded corners=3pt, fill=soft, align=center, font=\scriptsize, text width=19mm, minimum height=10mm},
-  dec/.style={draw, diamond, aspect=2, fill=orange!15, align=center, font=\scriptsize, inner sep=1pt},
-  arr/.style={-{Stealth[length=2mm]}, thick, navy},
-  lab/.style={font=\scriptsize, fill=white, inner sep=1pt}]
-\node[st] (a) at (0,0) {Upload\\CSV / Parquet};
-\node[dec] (b) at (2.75,0) {Mapping\\valid?};
-\node[st] (c) at (5.5,0) {Ingest, joins,\\diagnostics};
-\node[st] (d) at (8.25,0) {Train / tune\\(inner split)};
-\node[st] (e) at (11,0) {Score last $V$\\days, leaderboard};
-\node[st] (f) at (11,-2.4) {Forecast $\le H$\\days, P10--P90};
-\node[dec] (g) at (8.25,-2.4) {Store\\config?};
-\node[st] (h) at (5.5,-2.4) {Autopilot: P\&L,\\shifts, actions};
-\node[st] (i) at (2.75,-2.4) {Export PDF,\\Excel, CSV};
-\node[st, fill=gray!12] (fix) at (2.75,1.75) {Edit mapping};
-\node[st, fill=gray!12] (cfg) at (8.25,-4.1) {Set costs, wages,\\shifts};
-\draw[arr] (a) -- (b); \draw[arr] (b) -- node[lab,above]{yes} (c); \draw[arr] (c) -- (d); \draw[arr] (d) -- (e);
-\draw[arr] (e) -- (f); \draw[arr] (f) -- (g); \draw[arr] (g) -- node[lab,above]{yes} (h); \draw[arr] (h) -- (i);
-\draw[arr] (b) -- node[lab,right]{no} (fix); \draw[arr] (fix.west) -| (a.north);
-\draw[arr] (g) -- node[lab,right]{no} (cfg); \draw[arr] (cfg.west) -| (h.south);
-\end{tikzpicture}
-\note{Two decision points users meet: an invalid mapping (the backend explains what to fix) and a
-missing store configuration (P\&L needs costs and wages; no values are guessed).}
-\end{frame}
-
-% ---------------------------------------------------------------------------------------------------
 \begin{frame}{Method: leakage-free direct multi-horizon models}
 \begin{columns}[T]
 \column{0.5\textwidth}
@@ -182,6 +155,31 @@ Combination & ensemble, weights fitted \\ & on 1st half of validation \\
 \end{columns}
 \note{Leakage is the most common silent error in forecasting projects; the scramble test makes it
 a failing unit test. Tuning with Optuna is scored on an inner split, never on the reported window.}
+\end{frame}
+
+% ---------------------------------------------------------------------------------------------------
+\begin{frame}{Mathematical formulation}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Direct forecast, leakage-free}
+\[ \hat y_{i,T+h} = f\bigl(\phi(y_{i,\le T+h-o}),\ \mathbf z_{i,T+h},\ \mathbf s_i\bigr) \]
+\small $o=\lceil H/7\rceil\cdot 7 \ \Rightarrow\ T+h-o\le T$ for all $h\le H$; weekday-aligned.
+\vspace{6pt}
+
+\normalsize\textbf{Diebold--Mariano}
+\[ d_t=\tfrac{\sum_i(|e^A_{it}|-|e^B_{it}|)}{\sum y},\quad
+   \mathrm{DM}=\tfrac{\bar d}{\sqrt{\hat\sigma^2_{\mathrm{NW}}/T}} \]
+\small HLN small-sample factor, $t_{T-1}$; store bootstrap as cross-check.
+\column{0.48\textwidth}
+\textbf{Staffing integer program}
+\[ \min_{x\in\mathbb Z^J_{\ge0}} \sum_j \ell_j x_j \quad\text{s.t.}\quad \sum_j a_{tj}x_j \ge r_t \]
+\small $r_t=\max(m,\lceil F p_t/c\rceil)$ staff needed in hour $t$; templates $j$: start hour,
+length 4/6/8\,h (set covering, Dantzig 1954).\\[4pt]
+Service level: plan on $\lambda F$, $\lambda=1$ (P50) \ldots\ 1.117 (P90).
+\end{columns}
+\note{Be ready to derive why the lag offset prevents leakage: o is at least H, so the newest target used
+is at the origin. DM aggregates over stores per day because stores share daily shocks. The IP is the
+classic shift-scheduling covering model; HiGHS solves each store-day in milliseconds.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
@@ -213,7 +211,7 @@ coverage is inflated by closed days, so only hold-out coverage is reported.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
-\begin{frame}{Result 1: learned models halve the error}
+\begin{frame}{Single split: learned models halve the error}
 \begin{columns}[c]
 \column{0.52\textwidth}
 \includegraphics[width=\linewidth]{figures/fig_accuracy.pdf}
@@ -234,12 +232,35 @@ Ensemble & \textbf{8.34} & (= GRU) \\
 \end{tabular}
 \end{columns}
 \src{All 1,115 stores, identical validation window per horizon. Data: report/data/fig\_accuracy\_source.csv.}
-\note{RQ1: 51 to 58 percent lower WAPE than the seasonal-naive baseline. ARIMA/SARIMA are worse than
-naive in WAPE; they do not use promotions, which lift mean sales by 38.8 percent in this data.}
+\note{One window per horizon: 51 to 58 percent lower WAPE than the seasonal-naive baseline.
+ARIMA/SARIMA are worse than naive in WAPE; they do not use promotions, which lift mean sales by 38.8
+percent in this data. Caveat: these runs chose the stopping point on this same window, hence the
+backtest on the next slide.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
-\begin{frame}{Result 2: uncertainty and combination}
+\begin{frame}{H1: rolling-origin backtest (8 origins, honest stopping)}
+\begin{columns}[c]
+\column{0.56\textwidth}
+\includegraphics[width=\linewidth]{figures/fig_backtest.pdf}
+\column{0.42\textwidth}
+\small
+\begin{itemize}
+  \item LightGBM better at \alert{8 of 8} origins
+  \item Mean WAPE \textbf{9.8\,\%} (7.9--11.7) vs.\ \textbf{20.2\,\%} (16.2--24.2)
+  \item DM$^\ast=-10.9$, $p<10^{-4}$; sign test $p=0.008$
+  \item Stopping on the test window: no systematic gain ($p=0.92$)
+  \item Christmas is hardest: 14.7\,\% vs.\ 22.9\,\%
+\end{itemize}
+\end{columns}
+\src{28-day windows, 20 Dec 2014--31 Jul 2015, 242,560 store-days; rounds chosen on the 28 days before each window.}
+\note{H1 supported. The single split's 8.5 percent is at the favourable end; 9.8 percent is the
+year-round figure. Round counts vary from 66 to 3,050, so early stopping on squared error is a weak
+selector, but test-window stopping did not inflate WAPE here.}
+\end{frame}
+
+% ---------------------------------------------------------------------------------------------------
+\begin{frame}{Uncertainty and combination}
 \begin{columns}[T]
 \column{0.5\textwidth}
 \includegraphics[width=\linewidth]{figures/fig_coverage.pdf}
@@ -248,8 +269,33 @@ naive in WAPE; they do not use promotions, which lift mean sales by 38.8 percent
 \includegraphics[width=\linewidth]{figures/fig_ensemble.pdf}
 \small On the untouched 2nd half of the 42-day window the blend beats both members (7.84 vs.\ 8.01 / 8.34\,\%).
 \end{columns}
-\note{RQ2: bands usable for P10 downside and P90 capacity checks; caveat: the 30-day GRU band is
-narrow (77.2 percent). Ensemble weights were fitted on the first half only, so the comparison is honest.}
+\note{Bands usable for P10 downside and P90 capacity checks; caveat: the 30-day GRU band is narrow
+(77.2 percent). Ensemble weights were fitted on the first half only. The next slide shows that this
+small gain is not significant over days.}
+\end{frame}
+
+% ---------------------------------------------------------------------------------------------------
+\begin{frame}{H2: are the differences real? Diebold--Mariano tests}
+\centering\small
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+$H$ & A vs.\ B & $\Delta$WAPE (pp) & DM$^\ast$ & $p$ \\
+\midrule
+42 & Ensemble vs.\ LightGBM & $-0.14$ & $-1.91$ & 0.063 \\
+42 & GRU vs.\ LightGBM & $+0.38$ & $1.69$ & 0.098 \\
+30 & GRU vs.\ LightGBM & $-1.18$ & $-4.98$ & \textbf{$<$0.001} \\
+30 & GRU vs.\ MLP & $-0.03$ & $-0.10$ & 0.920 \\
+30 & LightGBM vs.\ SARIMA & $-10.92$ & $-4.10$ & \textbf{$<$0.001} \\
+\bottomrule
+\end{tabular}
+\vspace{6pt}
+\begin{itemize}\small
+  \item The ensemble's 0.14-point gain is \alert{not significant over days} ($p=0.063$)
+  \item Store bootstrap says ``significant'' --- but it ignores shocks shared by all stores on a day
+  \item Neural nets beat LightGBM at 30 days; GRU and MLP are indistinguishable
+\end{itemize}
+\note{Explain the two tests: bootstrap asks whether the result holds for other stores, DM whether it
+holds on other days. With 42 days there are only about 42 independent pieces of evidence.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
@@ -273,7 +319,28 @@ plan suggests a floater on Saturday. An optimiser is future work.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
-\begin{frame}{Result 3: interactive and reproducible}
+\begin{frame}{H3: staffing optimiser vs.\ rules}
+\begin{columns}[c]
+\column{0.55\textwidth}
+\includegraphics[width=\linewidth]{figures/fig_staffing.pdf}
+\column{0.43\textwidth}
+\small
+\begin{itemize}
+  \item 13,420 store-days, judged against \alert{actual} customers
+  \item IP on P50: $-1.5\,\%$ hours but $+16\,\%$ understaffing
+  \item IP on P90: $+8.1\,\%$ hours, $-65\,\%$ understaffing
+  \item At equal understaffing: \alert{same cost} as rules ($+0.00\,\%$)
+  \item H3 not supported --- value is choosing the service level
+\end{itemize}
+\end{columns}
+\src{Hourly profile and staffing parameters are planning assumptions (daily data only).}
+\note{An honest negative result: the rules' rounding acts as a safety buffer and lies on the
+optimiser's frontier. The optimiser makes the cost of service explicit, e.g. lambda 1.06 costs 3.4
+percent more hours and removes 32 percent of understaffing.}
+\end{frame}
+
+% ---------------------------------------------------------------------------------------------------
+\begin{frame}{Interactive and reproducible}
 \begin{columns}[T]
 \column{0.52\textwidth}
 \includegraphics[width=\linewidth]{figures/fig_latency.pdf}
@@ -288,18 +355,17 @@ plan suggests a floater on Saturday. An optimiser is future work.}
 \end{itemize}
 \end{columns}
 \src{Laptop: Intel Core i7-8665U, 24 GB RAM, loopback, 30 sequential calls per endpoint.}
-\note{RQ3: yes on a single client. Concurrency and network latency were not tested.}
+\note{Engineering question: yes on a single client. Concurrency and network latency were not tested.}
 \end{frame}
 
 % ---------------------------------------------------------------------------------------------------
 \begin{frame}{Limitations and threats to validity}
 \begin{itemize}
-  \item \textbf{One split per horizon}: no rolling origins, no error bars
-  \item \textbf{Neural non-determinism}: MLP 8.46\,\% (CPU) vs.\ 8.72\,\% (GPU); differences $<$0.3\,pp not meaningful
+  \item \textbf{Model selection}: single-split results stopped training on the test window; only LightGBM was re-run honestly
+  \item \textbf{Backtest scope}: 8 consecutive origins share training data; neural nets not backtested (CPU cost)
+  \item \textbf{Staffing model}: hourly profile assumed (daily data); demo wages and service rates
   \item \textbf{Data sets}: Rossmann store-level; Favorita one model (13.07\,\%); M5 item level not evaluated
-  \item \textbf{Planning parameters} are conventions; plans not validated against real staffing
   \item \textbf{Robustness}: run-through found all-zero neural forecasts on 1-year history (fixed + test)
-  \item \textbf{Performance}: single client on loopback only
 \end{itemize}
 \note{Be explicit: these limit how far the conclusion generalises. The all-zero bug is a good example
 of why an end-to-end run-through belongs in the evaluation.}
@@ -310,14 +376,14 @@ of why an end-to-end run-through belongs in the evaluation.}
 \begin{columns}[T]
 \column{0.5\textwidth}
 \begin{enumerate}
-  \item Rolling-origin backtests with confidence intervals
+  \item Honest backtest of neural nets and ensemble on the GPU; honest stopping as default
   \item M5 item-level evaluation, intermittent-demand metrics
   \item Calibrated bands per lead-time week (conformal / quantile heads)
 \end{enumerate}
 \column{0.5\textwidth}
 \begin{enumerate}\setcounter{enumi}{3}
   \item DeepAR / TFT \cite{salinas2020deepar,lim2021tft} under the same protocol
-  \item Roster optimiser \cite{ernst2004staff} and a field pilot
+  \item Multi-day roster IP (contracts, breaks, weekly hours) \cite{ernst2004staff} and hourly footfall data
   \item Load tests and a hosted pilot deployment
 \end{enumerate}
 \end{columns}
@@ -327,15 +393,17 @@ of why an end-to-end run-through belongs in the evaluation.}
 % ---------------------------------------------------------------------------------------------------
 \begin{frame}{Conclusion}
 \begin{itemize}
-  \item End-to-end, multi-tenant platform: upload $\rightarrow$ forecast $\rightarrow$ explainable store plan
-  \item Leakage-free direct multi-horizon pipeline with an automated leakage test
-  \item Best WAPE \textcolor{good}{\textbf{8.34\,\%}} (42 d) and \textcolor{good}{\textbf{8.52\,\%}} (30 d) vs.\ 19.5--22.6\,\% for baselines
-  \item P10--P90 bands cover 77--84\,\% of unseen days; interactive on a laptop; reproducible
-  \item Open: robustness over time and data sets, real-world value of the plans
+  \item \textbf{H1 supported}: LightGBM halves the benchmark's WAPE at all 8 origins (9.8 vs.\ 20.2\,\%, $p<10^{-4}$)
+  \item \textbf{H2 partly}: neural nets beat LightGBM at 30 d ($p<0.001$); the ensemble's gain at 42 d is not significant
+  \item \textbf{H3 not supported}: the integer program is not cheaper at equal understaffing --- it prices the service level
+  \item Leakage-free direct pipeline with a formal argument and an automated test; bands cover 77--84\,\%
+  \item Open: neural backtests on GPU, other data sets, real hourly demand
 \end{itemize}
 \vfill
 \centering\large Thank you --- questions?
-\note{Close with the answer to the RQ: yes, within the stated limitations.}
+\note{Answer to the RQ: yes for forecasting accuracy, large and stable across origins; no for cost
+savings from optimised staffing in this setting, where the optimiser's value is explicit pricing of
+the service level.}
 \end{frame}
 
 % ===================================================================================================
@@ -379,6 +447,33 @@ Ensemble & \textbf{8.34} & \textbf{793.3} & 0.122 & \textbf{0.162} & \textbf{0.9
 \column{0.5\textwidth}\includegraphics[width=\linewidth]{figures/screens/eda_explore.png}
 \end{columns}
 \src{Promotions lift mean daily sales by 38.8\,\% and footfall by 21.2\,\% (Rossmann, open days).}
+\end{frame}
+
+\begin{frame}{Backup: workflow from upload to plan}
+\centering
+\begin{tikzpicture}[
+  st/.style={draw, rounded corners=3pt, fill=soft, align=center, font=\scriptsize, text width=19mm, minimum height=10mm},
+  dec/.style={draw, diamond, aspect=2, fill=orange!15, align=center, font=\scriptsize, inner sep=1pt},
+  arr/.style={-{Stealth[length=2mm]}, thick, navy},
+  lab/.style={font=\scriptsize, fill=white, inner sep=1pt}]
+\node[st] (a) at (0,0) {Upload\\CSV / Parquet};
+\node[dec] (b) at (2.75,0) {Mapping\\valid?};
+\node[st] (c) at (5.5,0) {Ingest, joins,\\diagnostics};
+\node[st] (d) at (8.25,0) {Train / tune\\(inner split)};
+\node[st] (e) at (11,0) {Score last $V$\\days, leaderboard};
+\node[st] (f) at (11,-2.4) {Forecast $\le H$\\days, P10--P90};
+\node[dec] (g) at (8.25,-2.4) {Store\\config?};
+\node[st] (h) at (5.5,-2.4) {Autopilot: P\&L,\\shifts, actions};
+\node[st] (i) at (2.75,-2.4) {Export PDF,\\Excel, CSV};
+\node[st, fill=gray!12] (fix) at (2.75,1.75) {Edit mapping};
+\node[st, fill=gray!12] (cfg) at (8.25,-4.1) {Set costs, wages,\\shifts};
+\draw[arr] (a) -- (b); \draw[arr] (b) -- node[lab,above]{yes} (c); \draw[arr] (c) -- (d); \draw[arr] (d) -- (e);
+\draw[arr] (e) -- (f); \draw[arr] (f) -- (g); \draw[arr] (g) -- node[lab,above]{yes} (h); \draw[arr] (h) -- (i);
+\draw[arr] (b) -- node[lab,right]{no} (fix); \draw[arr] (fix.west) -| (a.north);
+\draw[arr] (g) -- node[lab,right]{no} (cfg); \draw[arr] (cfg.west) -| (h.south);
+\end{tikzpicture}
+\note{Two decision points users meet: an invalid mapping (the backend explains what to fix) and a
+missing store configuration (P\&L needs costs and wages; no values are guessed).}
 \end{frame}
 
 \begin{frame}[allowframebreaks]{References}

@@ -1,6 +1,6 @@
 """WCAG 2.2 contrast ratios of the storm theme's text/background pairs (OKLCH tokens from globals.css).
 
-    python report/scripts/contrast.py            # writes report/data/contrast.csv
+python report/scripts/contrast.py            # writes report/data/contrast.csv
 """
 
 from __future__ import annotations
@@ -63,7 +63,15 @@ def main() -> None:
     for fg, bg, use in PAIRS:
         hi, lo = sorted((luminance(fg), luminance(bg)), reverse=True)
         ratio = (hi + 0.05) / (lo + 0.05)
-        rows.append({"use": use, "foreground": fg, "background": bg, "ratio": round(ratio, 2), "wcag_aa_text": ratio >= 4.5})
+        rows.append(
+            {
+                "use": use,
+                "foreground": fg,
+                "background": bg,
+                "ratio": round(ratio, 2),
+                "wcag_aa_text": ratio >= 4.5,
+            }
+        )
         print(f"{use:32s} {ratio:5.2f}")
     with OUT.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))

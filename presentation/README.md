@@ -1,7 +1,7 @@
 # StorePulse AI — presentation (Beamer, 16:9)
 
-- `slides.tex` → `slides.pdf`: title + 14 content slides, then 4 backup slides and 2 reference
-  slides; about 20 minutes at 1–1.5 minutes per content slide.
+- `slides.tex` → `slides.pdf`: title + 17 content slides, then 5 backup slides and 2 reference
+  slides; about 20–25 minutes at 1–1.5 minutes per content slide.
 - `slides-notes.tex` → `slides-notes.pdf`: the same slides with the speaker notes on the right half
   of each page (presenter copy).
 - Theme: `metropolis` with a restrained navy / blue palette matching the report's charts.

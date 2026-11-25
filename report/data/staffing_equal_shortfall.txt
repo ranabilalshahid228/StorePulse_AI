@@ -1,0 +1,4 @@
+rule_paid_hours=605682
+rule_shortfall=19121
+ip_paid_hours_at_equal_shortfall=605711
+saving_pct=-0.00

@@ -38,7 +38,8 @@ slot, so the university logo appears only on the presentation's title slide.
 | `data/raw_runs/` | JSON + logs of the local CPU reruns (`scripts/run_pipeline.py`) |
 | `figures/*.pdf` | Charts drawn by `scripts/make_figures.py` from `data/*.csv` |
 | `figures/screens/` | Screenshots of the running app (demo data, 1440×900, account details hidden); crops by `scripts/crop_screens.py` |
-| `scripts/` | `collect_results.py`, `bench_api.py`, `make_figures.py`, `crop_screens.py`, `contrast.py`, `verify_refs.py` |
+| `data/backtest/` | Per-origin forecasts of the rolling-origin backtest (store × day × model) |
+| `scripts/` | `collect_results.py`, `backtest.py`, `significance.py`, `staffing_ip.py`, `staffing_frontier.py`, `bench_api.py`, `make_figures.py`, `crop_screens.py`, `contrast.py`, `verify_refs.py` |
 
 Sources of the data files:
 
@@ -51,6 +52,14 @@ Sources of the data files:
 - `pytest_results.xml`, `pytest_output.txt` — full backend test suite (57 passed).
 - `contrast.csv` — WCAG contrast of the UI theme tokens.
 - `reference_check.txt` — Crossref lookup of every DOI in `references.bib` (all found).
+- `backtest_per_origin.csv`, `backtest_summary.csv`, `backtest_log.txt` — `backtest.py`: 8 rolling
+  28-day origins, seasonal naive vs LightGBM with honest early stopping (and with stopping on the
+  test window, for comparison).
+- `significance_single_split.csv`, `significance_backtest.csv` — `significance.py`: Diebold–Mariano
+  tests (HLN-corrected, Newey–West variance) and store-level bootstrap intervals.
+- `staffing_ip_summary.csv`, `staffing_ip_storedays.parquet`, `staffing_frontier.csv`,
+  `staffing_equal_shortfall.txt` — `staffing_ip.py` and `staffing_frontier.py`: shift-scheduling
+  integer program (scipy/HiGHS) vs the Autopilot rule plan, evaluated against realised footfall.
 
 Regenerate (from `backend/`, Python venv of the project, local stack running for the API parts):
 
@@ -58,6 +67,10 @@ Regenerate (from `backend/`, Python venv of the project, local stack running for
 .venv\Scripts\python -m scripts.run_pipeline rossmann --families seasonal_naive lightgbm --horizon 42 --lgb-rounds 4000 --out ..\report\data\raw_runs\local_rossmann_h42.json
 .venv\Scripts\python -m scripts.run_pipeline rossmann --families seasonal_naive lightgbm --horizon 30 --lgb-rounds 4000 --out ..\report\data\raw_runs\local_rossmann_h30.json
 .venv\Scripts\python ..\report\scripts\collect_results.py
+.venv\Scripts\python ..\report\scripts\backtest.py --origins 8 --horizon 28      # ~25 min on 4 cores
+.venv\Scripts\python ..\report\scripts\significance.py
+.venv\Scripts\python ..\report\scripts\staffing_ip.py --days 14
+.venv\Scripts\python ..\report\scripts\staffing_frontier.py
 .venv\Scripts\python ..\report\scripts\bench_api.py --n 30
 .venv\Scripts\python ..\report\scripts\make_figures.py
 .venv\Scripts\python ..\report\scripts\crop_screens.py

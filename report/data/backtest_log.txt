@@ -1,0 +1,26 @@
+data to 2015-07-31, 1,017,209 rows
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 0: test 2015-07-04..2015-07-31 n=31,220 | WAPE naive 0.1764 honest 0.0809 teststop 0.0904 | rounds 650 vs 86 | 148s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 1: test 2015-06-06..2015-07-03 n=31,220 | WAPE naive 0.1879 honest 0.0803 teststop 0.0826 | rounds 446 vs 115 | 138s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 2: test 2015-05-09..2015-06-05 n=31,220 | WAPE naive 0.1813 honest 0.0968 teststop 0.0813 | rounds 66 vs 796 | 120s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 3: test 2015-04-11..2015-05-08 n=31,220 | WAPE naive 0.1782 honest 0.0852 teststop 0.0872 | rounds 1186 vs 45 | 232s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 4: test 2015-03-14..2015-04-10 n=31,220 | WAPE naive 0.1892 honest 0.0978 teststop 0.0976 | rounds 522 vs 638 | 184s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 5: test 2015-02-14..2015-03-13 n=31,220 | WAPE naive 0.1622 honest 0.0840 teststop 0.0857 | rounds 126 vs 73 | 59s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 6: test 2015-01-17..2015-02-13 n=29,060 | WAPE naive 0.3110 honest 0.1136 teststop 0.1139 | rounds 484 vs 106 | 122s
+D:\StorePulse_AI\backend\app\ml\features.py:386: RuntimeWarning: Mean of empty slice
+  out["dow_mean_13w"] = np.nanmean(np.where(np.isnan(weekly), np.nan, weekly), axis=1).astype("float32")
+origin 7: test 2014-12-20..2015-01-16 n=26,180 | WAPE naive 0.2288 honest 0.1467 teststop 0.1478 | rounds 3050 vs 1273 | 453s
+exit 0

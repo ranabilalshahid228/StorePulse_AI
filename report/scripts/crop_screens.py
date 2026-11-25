@@ -1,7 +1,7 @@
 """Crop focused regions out of the full-page screenshots in report/figures/screens (originals kept).
 
-    cd backend
-    .venv\\Scripts\\python ..\\report\\scripts\\crop_screens.py
+cd backend
+.venv\\Scripts\\python ..\\report\\scripts\\crop_screens.py
 """
 
 from __future__ import annotations

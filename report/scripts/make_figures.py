@@ -1,7 +1,7 @@
 """Draw every results chart of the report from report/data/*.csv (vector PDF, IEEE column width).
 
-    cd backend
-    .venv\\Scripts\\python ..\\report\\scripts\\make_figures.py
+cd backend
+.venv\\Scripts\\python ..\\report\\scripts\\make_figures.py
 """
 
 from __future__ import annotations
@@ -102,8 +102,13 @@ def fig_accuracy() -> None:
         for b, v in zip(bars, sub["wape"]):
             if pd.notna(v):
                 ax.text(
-                    b.get_x() + b.get_width() / 2, v * 100 + 0.4, f"{v * 100:.1f}",
-                    ha="center", va="bottom", rotation=90, fontsize=5,
+                    b.get_x() + b.get_width() / 2,
+                    v * 100 + 0.4,
+                    f"{v * 100:.1f}",
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                    fontsize=5,
                 )
     ax.set_xticks(range(len(ORDER)))
     ax.set_xticklabels([LABEL[m] for m in ORDER], rotation=25, ha="right")
@@ -249,11 +254,17 @@ def fig_fit_time() -> None:
     for m in ("seasonal_naive", "lightgbm", "torch_mlp", "arima", "sarima"):
         lo = local[local["family"] == m]
         if len(lo):
-            rows.append({"model": LABEL[m], "where": "laptop CPU (i7-8665U)", "seconds": lo.iloc[0]["fit_seconds"]})
+            rows.append(
+                {"model": LABEL[m], "where": "laptop CPU (i7-8665U)", "seconds": lo.iloc[0]["fit_seconds"]}
+            )
     df = pd.DataFrame(rows)
     df.to_csv(DATA / "fig_fit_time_source.csv", index=False)
     fig, ax = plt.subplots(figsize=(COL, 1.9))
-    colors = {"GPU host (RTX 6000 Ada)": "#009E73", "GPU host (CPU, 16 threads)": "#56B4E9", "laptop CPU (i7-8665U)": "#E69F00"}
+    colors = {
+        "GPU host (RTX 6000 Ada)": "#009E73",
+        "GPU host (CPU, 16 threads)": "#56B4E9",
+        "laptop CPU (i7-8665U)": "#E69F00",
+    }
     labels = [f"{r.model} — {r.where}" for r in df.itertuples()]
     ax.barh(labels, df["seconds"].clip(lower=0.05), color=[colors[w] for w in df["where"]])
     for i, v in enumerate(df["seconds"]):
@@ -267,9 +278,107 @@ def fig_fit_time() -> None:
     plt.close(fig)
 
 
+def fig_backtest() -> None:
+    path = DATA / "backtest_per_origin.csv"
+    if not path.exists():
+        return
+    po = pd.read_csv(path).sort_values("test_start")
+    labels = [pd.Timestamp(s).strftime("%d %b\n%Y") for s in po["test_start"]]
+    fig, ax = plt.subplots(figsize=(COL, 1.9))
+    x = range(len(po))
+    ax.plot(
+        x,
+        po["wape_seasonal_naive"] * 100,
+        marker="o",
+        ms=3,
+        lw=1,
+        color=C["seasonal_naive"],
+        label="Seasonal naive",
+    )
+    ax.plot(
+        x,
+        po["wape_lightgbm_honest"] * 100,
+        marker="o",
+        ms=3,
+        lw=1.2,
+        color=C["lightgbm"],
+        label="LightGBM (honest stopping)",
+    )
+    ax.plot(
+        x,
+        po["wape_lightgbm_teststop"] * 100,
+        marker="x",
+        ms=3,
+        lw=0.8,
+        ls="--",
+        color="#555555",
+        label="LightGBM (stopping on test window)",
+    )
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, fontsize=5.5)
+    ax.set_xlabel("Start of the 28-day test window (origin)")
+    ax.set_ylabel("WAPE (%)")
+    ax.set_ylim(0, po["wape_seasonal_naive"].max() * 100 + 12)
+    ax.legend(frameon=False, fontsize=5.8, loc="upper right")
+    fig.savefig(FIG / "fig_backtest.pdf")
+    plt.close(fig)
+
+
+def fig_staffing() -> None:
+    path = DATA / "staffing_frontier.csv"
+    if not path.exists():
+        return
+    fr = pd.read_csv(path)
+    s = pd.read_csv(DATA / "staffing_ip_summary.csv").set_index("plan")
+    fig, ax = plt.subplots(figsize=(COL, 2.0))
+    ax.plot(
+        fr["shortfall_staff_hours"] / 1000,
+        fr["paid_hours"] / 1000,
+        marker="o",
+        ms=3,
+        lw=1.2,
+        color=C["ensemble"],
+        label="Integer program, safety factor $\\lambda$",
+    )
+    for _, r in fr.iterrows():
+        if r["lambda"] in (1.0, 1.06, 1.117, 1.14):
+            ax.annotate(
+                f"$\\lambda$={r['lambda']:.3g}",
+                (r["shortfall_staff_hours"] / 1000, r["paid_hours"] / 1000),
+                textcoords="offset points",
+                xytext=(4, 3),
+                fontsize=5.5,
+            )
+    rule = s.loc["rule_p50"]
+    ax.scatter(
+        [rule["shortfall_staff_hours"] / 1000],
+        [rule["paid_hours"] / 1000],
+        color=C["sarima"],
+        zorder=3,
+        s=22,
+        marker="s",
+        label="Rule-based plan (P50)",
+    )
+    ax.set_xlabel("Understaffing vs realised footfall (thousand staff-hours)")
+    ax.set_ylabel("Paid staff-hours (thousand)")
+    ax.legend(frameon=False, fontsize=6, loc="upper right")
+    fig.savefig(FIG / "fig_staffing.pdf")
+    plt.close(fig)
+
+
 def main() -> None:
     FIG.mkdir(parents=True, exist_ok=True)
-    for f in (fig_accuracy, fig_week_ahead, fig_weekday, fig_coverage, fig_ensemble, fig_latency, fig_fit_time):
+    for f in (
+        fig_accuracy,
+        fig_week_ahead,
+        fig_weekday,
+        fig_coverage,
+        fig_ensemble,
+        fig_latency,
+        fig_fit_time,
+        fig_backtest,
+        fig_staffing,
+    ):
         f()
         print("drew", f.__name__)
 

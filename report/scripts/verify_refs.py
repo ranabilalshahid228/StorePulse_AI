@@ -1,6 +1,6 @@
 """Check every DOI cited in references.bib against Crossref and print the registered metadata.
 
-    python report/scripts/verify_refs.py report/references.bib      # or a list of DOIs as arguments
+python report/scripts/verify_refs.py report/references.bib      # or a list of DOIs as arguments
 """
 
 from __future__ import annotations

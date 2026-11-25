@@ -59,15 +59,17 @@ platform that turns uploaded daily sales history into multi-horizon forecasts wi
 and then into a store-level operating plan: a profit-and-loss projection, a shift roster and a
 ranked list of actions. The forecasting core trains gradient-boosted trees (LightGBM), feed-forward
 and recurrent neural networks (MLP, GRU) and a weight-fitted ensemble on a shared, leakage-free
-feature set, and compares them with seasonal-naive, ARIMA and SARIMA baselines on an identical
-out-of-sample window. On all 1,115 stores of the public Rossmann dataset with a 42-day horizon,
-the ensemble reaches a weighted absolute percentage error (WAPE) of 8.34\,\%, against 19.69\,\% for
-the seasonal-naive baseline and 21.86--22.56\,\% for SARIMA/ARIMA; at 30 days the GRU is best
-(8.52\,\%). Empirical P10--P90 bands of the machine-learning models cover 77--84\,\% of an untouched
-hold-out. The LightGBM result was reproduced to four decimals on a laptop CPU, and the interactive
-API answers the forecast, P\&L and workforce endpoints in under 70\,ms (95th percentile). The report
-also documents the limitations: a single time split, one main dataset, and planning parameters that
-are conventions rather than data.
+feature set, and compares them with seasonal-naive, ARIMA and SARIMA baselines. On all 1,115 stores
+of the public Rossmann dataset, a rolling-origin backtest over eight 28-day windows, with no test data
+used for model selection, shows LightGBM halving the weighted absolute percentage error (WAPE) of the
+seasonal-naive benchmark at every origin (9.8 vs.\ 20.2\,\% on average; Diebold--Mariano $p<10^{-4}$).
+On a common 30-day window the neural networks are significantly better than LightGBM (8.5 vs.\
+9.7\,\%, $p<0.001$), whereas the ensemble's small advantage at 42 days (8.34 vs.\ 8.48\,\%) is not
+significant ($p=0.063$). A shift-scheduling integer program, evaluated against realised footfall on
+13,420 store-days, is not cheaper than the platform's rule-based plans at equal understaffing; its
+value is to price the service level explicitly. Empirical P10--P90 bands cover 77--84\,\% of
+hold-out days, and the interactive API answers in under 70\,ms. Limitations include one main data
+set, consecutive backtest origins and an assumed hourly demand profile.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -105,11 +107,13 @@ the platform runs locally or as a pilot.
   lagged by $\lceil H/7\rceil\cdot 7$ days, verified by an automated scramble test (\cref{sec:features}).
 \item A model zoo with a common interface---seasonal naive, ARIMA, SARIMA, LightGBM, MLP, GRU and a
   weight-fitted ensemble---evaluated on identical out-of-sample windows (\cref{sec:results-accuracy}).
-\item An honest uncertainty and tuning protocol: empirical P10--P90 bands with a separate hold-out
-  coverage check, and Optuna trials scored on an inner split, never on the reported
-  window (\cref{sec:validation}).
+\item A statistical evaluation: a rolling-origin backtest over eight 28-day origins with honest
+  early stopping, Diebold--Mariano tests with a small-sample correction, and store-level bootstrap
+  intervals (\cref{sec:math,sec:results-backtest,sec:results-significance}).
+\item Empirical P10--P90 bands with a separate hold-out coverage check (\cref{sec:validation}).
 \item A planning layer that converts forecasts into P\&L ranges, break-even revenue, shift
-  headcounts and prioritised actions, with every assumption echoed in the output (\cref{sec:autopilot}).
+  headcounts and prioritised actions (\cref{sec:autopilot}), and a shift-scheduling integer program
+  that is compared with the rule-based plan against realised footfall (\cref{sec:results-staffing}).
 \item A reproducible engineering setup: a Docker-free local stack, GPU training on university
   hardware with checkpoint import, a 57-test suite, and measured performance figures
   (\cref{sec:results-system}).
@@ -129,23 +133,31 @@ configuration only (``no mock data in production paths''), raising a validation 
 is missing; G5---support GPU training and export reports as CSV, Excel and PDF.
 
 \subsection{Research question formulated for this report}
-The project materials do not state a research question. For this report the following question
-and sub-questions were formulated to make the evaluation falsifiable:
+The project materials do not state a research question. For this report the following question was
+formulated so that each part can be answered with a statistical test or an optimisation result:
 
 \begin{quote}\itshape
-RQ: Can a single platform built from standard, open components deliver store-level daily sales
-forecasts that are substantially more accurate than classical statistical baselines, with
-calibrated uncertainty and interactive response times, so that they can drive store planning?
+RQ: Under an evaluation protocol in which no test data influence model selection, does a global
+gradient-boosted model forecast daily store sales significantly more accurately than the
+seasonal-naive benchmark across forecast origins, and can the resulting probabilistic forecasts be
+turned into staffing plans that cost less than the platform's rule-based plans without more
+understaffing?
 \end{quote}
 
+\noindent It is split into three hypotheses:
 \begin{itemize}
-\item \textbf{RQ1 (accuracy):} How much lower is the out-of-sample error of the machine-learning
-  models than that of seasonal-naive, ARIMA and SARIMA baselines under identical conditions?
-\item \textbf{RQ2 (uncertainty):} Do the P10--P90 bands cover close to 80\,\% of unseen days?
-\item \textbf{RQ3 (operability):} Are training, forecasting, planning and API response times
-  compatible with interactive use on commodity hardware, and are results reproducible across
-  machines?
+\item \textbf{H1 (accuracy over time):} Over $K=8$ rolling 28-day origins, LightGBM has lower WAPE
+  than the seasonal-naive forecast. Tested with the Diebold--Mariano test (HLN correction) on the
+  pooled daily loss differential and a sign test across origins (\cref{sec:results-backtest}).
+\item \textbf{H2 (model differences):} On a common validation window, the differences between the
+  learned models (ensemble, MLP, GRU, LightGBM) are statistically significant. Tested with the same
+  DM test and a store-level bootstrap (\cref{sec:results-significance}).
+\item \textbf{H3 (planning):} A cost-minimising integer program needs fewer paid staff-hours than the
+  rule-based plan built from the same forecast, without increasing understaffing measured against
+  realised footfall (\cref{sec:results-staffing}).
 \end{itemize}
+A secondary, engineering question asks whether forecasts and plans are fast and reproducible enough
+for interactive use on commodity hardware (\cref{sec:results-system}).
 
 % =====================================================================================================
 \section{Literature Review and Related Work}\label{sec:related}
@@ -370,6 +382,95 @@ quantile heads, an empirical P10--P90 band is formed from the 10th and 90th perc
 validation residuals; its coverage is measured both in-sample and on a hold-out (calibrated on the
 first half, measured on the second).
 
+\paragraph*{Model selection inside the validation window} In the platform's default training path,
+LightGBM's early stopping (patience 100 rounds) and the neural networks' best-epoch selection monitor
+the loss on the validation window, i.e.\ the window on which the metrics are reported. This uses test
+data for one scalar choice (the number of rounds or epochs). The single-split results in
+\cref{tab:accuracy} were produced this way; the rolling-origin backtest (\cref{sec:results-backtest})
+therefore uses an honest protocol in which the round count is chosen on the last $H$ days before the
+test window and the model is then refitted on all training data.
+
+\subsection{Mathematical formulation}\label{sec:math}
+\paragraph*{Forecasting problem} Let $y_{i,t}\ge 0$ be the sales of store $i\in\{1,\dots,N\}$ on day
+$t$, $\mathbf{z}_{i,t}$ the known-future covariates (open, promotion, holidays) and $\mathbf{s}_i$
+static store attributes. At origin $T$ a single \emph{direct} model $f$ forecasts every lead time
+$h=1,\dots,H$:
+\begin{equation}
+  \hat y_{i,T+h} = f\bigl(\mathbf{x}_{i,T+h}\bigr),\qquad
+  \mathbf{x}_{i,t} = \bigl(\phi(y_{i,\le t-o}),\ \mathbf{z}_{i,t},\ \mathbf{s}_i,\ \text{calendar}(t)\bigr),
+\end{equation}
+where $\phi$ collects all target-derived features (lags, rolling statistics, group aggregates) and
+$o$ is the lag offset.
+
+\paragraph*{Leakage-freeness} With $o=\lceil H/7\rceil\cdot 7$ we have $o\ge H\ge h$, hence
+$t-o = T+h-o \le T$: every target value used for any lead time is observed at the origin, so the same
+model is valid for all $h\le H$ without recursion. Because $o\equiv 0 \pmod 7$, the most recent lag
+$y_{i,t-o}$ falls on the same weekday as $t$, which preserves the strong weekly pattern of retail
+sales. The price of this choice is that near lead times ($h\ll H$) cannot use the most recent
+$o-h$ days.
+
+\paragraph*{Training objective and closed days} Closed days ($\text{open}_{i,t}=0$) are removed from
+training and forecast as exactly zero. LightGBM minimises the squared error $\sum (y-\hat y)^2$ (or a
+Tweedie deviance for zero-heavy targets); the MLP and GRU minimise the squared error of the
+standardised $\log(1+y)$.
+
+\paragraph*{Ensemble weights} For two members with forecasts $\hat y^{(1)},\hat y^{(2)}$ the blend
+is $\hat y^{(w)} = w\,\hat y^{(1)} + (1-w)\,\hat y^{(2)}$ with
+\begin{equation}
+  w^\ast = \arg\min_{w\in\{0,0.05,\dots,1\}} \mathrm{WAPE}\bigl(y,\hat y^{(w)}\bigr),
+\end{equation}
+computed on the first half of the validation window; every variant is scored on the second half only. The convex combination guarantees that the
+blend's absolute error is never above the weighted average of the members' errors (triangle
+inequality), which is why combining rarely hurts~\cite{bates1969combination}.
+
+\paragraph*{Prediction band} For models without quantile heads, the relative residuals
+$\rho = y/\hat y - 1$ on validation days with $y,\hat y>0$ give the empirical quantiles
+$\hat q_{0.1},\hat q_{0.9}$, and the band is $[\hat y(1+\hat q_{0.1}),\ \hat y(1+\hat q_{0.9})]$.
+It assumes that relative errors are exchangeable across stores and days; its hold-out coverage tests
+that assumption.
+
+\paragraph*{Diebold--Mariano test} For two forecasts $A,B$ of the same store-days define the daily
+loss differential, scaled so that it sums to the WAPE difference,
+\begin{equation}
+  d_t = \frac{\sum_i \bigl(|y_{i,t}-\hat y^A_{i,t}| - |y_{i,t}-\hat y^B_{i,t}|\bigr)}
+             {\sum_{i,s} y_{i,s}},\qquad \sum_t d_t = \mathrm{WAPE}_A - \mathrm{WAPE}_B .
+\end{equation}
+Aggregating over stores first keeps the common daily shocks (weather, holidays) that make store
+errors correlated. Under $H_0: \mathbb{E}[d_t]=0$,
+\begin{equation}
+  \mathrm{DM} = \frac{\bar d}{\sqrt{\hat\sigma^2_{\mathrm{NW}}/T}},\qquad
+  \hat\sigma^2_{\mathrm{NW}} = \hat\gamma_0 + 2\sum_{k=1}^{L}\Bigl(1-\tfrac{k}{L+1}\Bigr)\hat\gamma_k ,
+\end{equation}
+with the Newey--West long-run variance~\cite{newey1987hac} and lag $L=\lfloor 4(T/100)^{2/9}\rfloor$
+\cite{diebold1995comparing}. Because $T$ is small (28--224 days), the statistic is multiplied by the
+Harvey--Leybourne--Newbold factor $\sqrt{(T+1-2h+h(h-1)/T)/T}$ with $h=L+1$ and compared with a
+Student-$t_{T-1}$ distribution~\cite{harvey1997testing}.
+
+\paragraph*{Store bootstrap} As a complementary measure, stores are resampled with replacement
+($B=2000$) and $\mathrm{WAPE}_A-\mathrm{WAPE}_B$ is recomputed on each resample; the 2.5 and 97.5\,\%
+percentiles form a 95\,\% interval. Resampling whole stores keeps each store's days together (a
+block bootstrap with the store as block~\cite{kunsch1989jackknife}). It answers ``would the difference
+hold for a different set of stores?'', whereas DM answers ``would it hold on other days?''. The two can
+disagree when errors share common daily shocks.
+
+\paragraph*{Staffing integer program} For one store-day with forecast footfall $F$, let $p_t$ be the
+share of customers in hour $t=0,\dots,11$, $c$ the customers one employee serves per hour and $m$ the
+minimum staff on the floor. The hourly requirement is
+\begin{equation}
+  r_t = \max\bigl(m,\ \lceil F p_t / c\rceil\bigr).
+\end{equation}
+Shift templates $j=(s_j,\ell_j)$ start at hour $s_j$ and last $\ell_j\in\{4,6,8\}$ hours; $a_{tj}=1$
+if template $j$ covers hour $t$. With $x_j\in\mathbb{Z}_{\ge0}$ workers on template $j$, the
+set-covering formulation of Dantzig~\cite{dantzig1954comment} is
+\begin{equation}
+  \min_{x\in\mathbb{Z}^{J}_{\ge 0}} \ \sum_j \ell_j x_j
+  \quad\text{s.t.}\quad \sum_j a_{tj} x_j \ \ge\ r_t,\ \ t=0,\dots,11 .
+\end{equation}
+The objective is paid staff-hours (labour cost is the hourly wage times this value). A service-level
+variant plans on the P90 forecast, $F_{0.9}=\hat y(1+\hat q_{0.9})/\bar b_i$, where $\bar b_i$ is the
+store's average basket (sales per customer). Plans are evaluated against the requirement implied by
+the \emph{realised} footfall, with understaffing $\sum_t \max(0, r^{\text{act}}_t - \text{staff}_t)$.
+
 \subsection{Store Autopilot}\label{sec:autopilot}
 The Autopilot is a pure function from (model, data, store configuration, scenario) to a JSON plan.
 For a window (next day, 7 or 30 days, or a custom range within the model horizon) it forecasts
@@ -403,7 +504,11 @@ the Corporaci\'on Favorita store sales~\cite{kaggle2021storesales} (3,000,888 ro
 33 product families, 2013--2017), and a three-store synthetic data set exercise product rankings and
 edge cases. \textbf{Split.} For horizon $H\in\{30,42\}$ the last $H$ days are held out
 (42 days: 20 Jun--31 Jul 2015, 46,830 store-days; 30 days: 2 Jul--31 Jul 2015, 33,450 store-days);
-every model of the same horizon is scored on the same rows. \textbf{Environments.} Neural networks
+every model of the same horizon is scored on the same rows. \textbf{Backtest.} Eight rolling
+origins with consecutive 28-day test windows (20 Dec 2014--31 Jul 2015, 242,560 store-days) compare
+LightGBM and the seasonal-naive model; for each origin the data are truncated at the end of the test
+window and the whole pipeline is rerun. \textbf{Staffing.} Plans for 18--31 July 2015 are built from the
+42-day ensemble forecast and evaluated against actual customer counts. \textbf{Environments.} Neural networks
 and the ensembles were trained with the standalone CLI on the OTH JupyterHub host (NVIDIA RTX 6000
 Ada, CUDA 12.6, PyTorch 2.14, LightGBM 4.7 with 16 threads); baselines and reproduction runs used a
 laptop (Intel Core i7-8665U, 4 cores, 24\,GB RAM, no CUDA GPU). \textbf{System measurements.} API
@@ -431,11 +536,15 @@ store-days of the validation window.
 \item \textbf{Interval coverage} (\%): share of days inside $[\hat y_{10}, \hat y_{90}]$; nominal 80\,\%.
   We report the \emph{hold-out} coverage, because in-sample coverage is inflated by closed days that
   are always covered (identical 82.8\,\% for every model at 42 days).
+\item \textbf{DM statistic and $p$-value}, \textbf{95\,\% bootstrap interval} (percentage points of
+  WAPE) and a \textbf{sign test} over origins: significance of accuracy differences (\cref{sec:math}).
+\item \textbf{Paid staff-hours} and \textbf{understaffing} (staff-hours below the requirement implied
+  by realised footfall): cost and service of a staffing plan.
 \item \textbf{Training time} (s), \textbf{job duration} (s) and \textbf{API latency} (ms, median and
   95th percentile): operational cost and responsiveness.
 \end{itemize}
-The seasonal-naive forecast is the baseline for RQ1; ARIMA and SARIMA are the classical
-statistical references.
+The seasonal-naive forecast is the baseline for H1; ARIMA and SARIMA are the classical statistical
+references; the rule-based plan is the baseline for H3.
 
 % =====================================================================================================
 \section{Results}\label{sec:results}
@@ -577,6 +686,138 @@ validation window, measured on the second). Dashed line: nominal 80\,\%. Data:
 \label{fig:coverage}
 \end{figure}
 
+\subsection{Rolling-origin backtest}\label{sec:results-backtest}
+\Cref{fig:backtest} and \cref{tab:backtest} show LightGBM with honest early stopping against the
+seasonal-naive model over eight consecutive 28-day test windows. LightGBM is better at \emph{every}
+origin. Its WAPE ranges from 8.03 to 14.67\,\% (mean 9.82\,\%, 95\,\% $t$-interval over origins
+7.93--11.71\,\%), against 16.22--31.10\,\% for the baseline (mean 20.19\,\%). Pooled over all 242,560
+store-days the WAPE difference is $-10.32$ percentage points; the DM test over the 224 days gives
+DM$^\ast=-10.90$ ($p<10^{-4}$), the sign test over origins $p=0.008$ (8 of 8), and the store
+bootstrap $[-10.49,-10.14]$. H1 is supported.
+
+Accuracy varies strongly over time. The Christmas window (20 Dec--16 Jan, only 935 stores because 180
+stores lack data for late 2014) and the following window are the hardest for both models; summer
+windows are the easiest. The single-split 42-day WAPE (8.48\,\%) is therefore at the favourable end of
+what the model achieves across the year, and 9.8\,\% is the more representative figure.
+
+Choosing the round count on the test window instead of the inner window made no systematic
+difference: pooled WAPE 9.69 vs.\ 9.67\,\%, DM $p=0.92$, better in only 2 of 8 origins. The selected
+round counts, however, are unstable under both protocols (45--1,273 with test-window stopping,
+66--3,050 honestly), which shows that early stopping on a squared-error loss is a weak selector for a
+WAPE-oriented model. The single-split LightGBM results in \cref{tab:accuracy} are thus unlikely to be
+materially optimistic, although this was verified only for LightGBM.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_backtest.pdf}
+\caption{WAPE per rolling origin (28-day test windows, all stores). LightGBM with honest early stopping
+beats the seasonal-naive model at every origin; stopping on the test window (dashed) makes no
+systematic difference. Data: \code{data/backtest\_per\_origin.csv}.}
+\label{fig:backtest}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Rolling-origin backtest, eight 28-day origins (WAPE in \%). The interval is a Student-$t$
+interval over origins; origins share training data, so it is approximate.}
+\label{tab:backtest}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Model & Mean & 95\,\% interval & Min & Max \\
+\midrule
+Seasonal naive & 20.19 & 16.16--24.21 & 16.22 & 31.10 \\
+LightGBM, honest stopping & \textbf{9.82} & 7.93--11.71 & 8.03 & 14.67 \\
+LightGBM, stopping on test window & 9.83 & 7.94--11.72 & 8.13 & 14.78 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Significance of model differences}\label{sec:results-significance}
+\Cref{tab:dm} tests the differences of \cref{tab:accuracy} with the DM test (HLN correction,
+Newey--West lag 3) and the store bootstrap of \cref{sec:math}. At 30 days the neural networks beat
+LightGBM clearly ($p<0.001$, WAPE $-1.2$ percentage points) and LightGBM beats SARIMA ($p<0.001$),
+whereas GRU and MLP are indistinguishable ($p=0.92$) and so are SARIMA and ARIMA ($p=0.69$). At 42
+days the ensemble's 0.14-point advantage over LightGBM is \emph{not} significant at the 5\,\% level
+over days ($p=0.063$), and neither are the MLP's and GRU's disadvantages ($p=0.49$, $0.10$).
+
+The store bootstrap intervals for these 42-day pairs exclude zero. The two procedures answer
+different questions: the bootstrap holds the 42 days fixed and asks whether the gap would persist
+for another set of stores, while DM asks whether it would persist on other days. Because all stores
+share daily shocks (weather, holidays, promotions), 42 days provide only about 42 independent pieces
+of evidence, and on that basis the small 42-day differences are not established. These single-split
+forecasts also selected their round or epoch count on the same window (\cref{sec:validation}).
+
+\begin{table}[t]
+\centering
+\caption{Diebold--Mariano tests (HLN-corrected, two-sided) and 95\,\% store-bootstrap intervals for the
+WAPE difference $A-B$ (percentage points). Negative values favour $A$.}
+\label{tab:dm}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+$H$ & $A$ vs.\ $B$ & $\Delta$WAPE & DM$^\ast$ & $p$ & Bootstrap 95\,\% \\
+\midrule
+42 & Ensemble vs.\ LightGBM & $-0.14$ & $-1.91$ & 0.063 & $[-0.16, -0.11]$ \\
+42 & MLP vs.\ LightGBM & $+0.24$ & $0.70$ & 0.489 & $[+0.16, +0.32]$ \\
+42 & GRU vs.\ LightGBM & $+0.38$ & $1.69$ & 0.098 & $[+0.29, +0.47]$ \\
+\midrule
+30 & GRU vs.\ LightGBM & $-1.18$ & $-4.98$ & $<$0.001 & $[-1.31, -1.06]$ \\
+30 & MLP vs.\ LightGBM & $-1.15$ & $-4.40$ & $<$0.001 & $[-1.29, -1.02]$ \\
+30 & GRU vs.\ MLP & $-0.03$ & $-0.10$ & 0.920 & $[-0.11, +0.05]$ \\
+30 & LightGBM vs.\ SARIMA & $-10.92$ & $-4.10$ & $<$0.001 & $[-11.32, -10.56]$ \\
+30 & SARIMA vs.\ ARIMA & $-1.27$ & $-0.40$ & 0.694 & $[-1.57, -0.94]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Staffing: integer program versus rules}\label{sec:results-staffing}
+The plans were built from the 42-day ensemble forecast for the last 14 days of its validation window
+(18--31 July 2015, 13,420 open store-days) and judged against the hourly requirement implied by the
+\emph{actual} customer counts (\cref{sec:math}; demo configuration: 20 customers per staff-hour,
+at least two staff, 12 opening hours). The P50 integer program pays 1.5\,\% fewer staff-hours than the
+rule plan but leaves 16\,\% more understaffing (22,233 vs.\ 19,121 staff-hours), because the rules'
+rounding per four-hour block acts as an implicit buffer. Planning the integer program on the P90
+forecast costs 8.1\,\% more hours and cuts understaffing by 65\,\% (\cref{tab:staffing}).
+
+\Cref{fig:staffing} gives the fair comparison: scaling the planned footfall by a safety factor
+$\lambda$ traces the optimiser's cost--understaffing frontier, and the rule plan lies \emph{on} it.
+At the rule plan's understaffing the optimiser needs 605,711 paid hours versus the rules' 605,682
+(interpolated, $+0.00\,\%$). H3 is therefore not supported in this setting: with three fixed shifts that
+already match the assumed demand profile, a minimum of two staff and integer rounding, the simple rules
+are cost-efficient. The value of the optimisation model lies elsewhere: it makes the trade-off
+explicit, so a manager can choose a service level (for example $\lambda=1.06$: $+3.4\,\%$ hours,
+$-32\,\%$ understaffing) instead of inheriting the one implied by rounding.
+
+\begin{table}[t]
+\centering
+\caption{Staffing plans for 13,420 open store-days, evaluated against realised footfall.}
+\label{tab:staffing}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Plan & Paid hours & vs.\ rules & Understaffing & Days w/o gap \\
+ & & (\%) & (staff-h) & (\%) \\
+\midrule
+Rules, P50 forecast & 605,682 & 0.0 & 19,121 & 67.5 \\
+Integer program, P50 & 596,724 & $-1.5$ & 22,233 & 65.3 \\
+Integer program, P90 & 655,026 & $+8.1$ & 6,705 & 87.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_staffing.pdf}
+\caption{Cost--understaffing frontier of the integer program as the planned footfall is scaled by
+$\lambda$ (1 = P50, 1.117 = P90), and the rule-based plan (square). Data:
+\code{data/staffing\_frontier.csv}.}
+\label{fig:staffing}
+\end{figure}
+
 \subsection{System performance and reproducibility}\label{sec:results-system}
 \paragraph*{Reproducibility} Re-running LightGBM with the same code on the laptop CPU reproduced the
 GPU host's validation WAPE to four decimal places at both horizons (0.08478 and 0.09700), at 48\,s
@@ -667,35 +908,60 @@ daily sales by 38.8\,\% and footfall by 21.2\,\%; December is the strongest mont
 \section{Discussion}\label{sec:discussion}
 
 \subsection{Answering the research question}
-\textbf{RQ1.} Under identical conditions the machine-learning models reduce WAPE from 19.5--22.6\,\%
-(baselines) to 8.3--9.7\,\%, i.e.\ by 51--58\,\% relative to the seasonal-naive baseline, and RMSSE
-from 0.36--0.45 to 0.16--0.19. This agrees with the M5 finding that global learned models beat
-per-series statistical models on retail data~\cite{makridakis2022m5}, and the size of the gap is
-consistent with information the baselines cannot use (promotions, closures, holidays and
-cross-store patterns); this attribution was not tested by ablation in this report. \textbf{RQ2.} The empirical bands of the learned models are close to nominal or
-conservative (77--84\,\% hold-out coverage), while baseline bands are more than twice as wide and
-ARIMA/SARIMA under-cover;
-the bands are therefore usable for planning P10 downside and P90 capacity, with the caveat that
-the 30-day GRU band is somewhat narrow. \textbf{RQ3.} All interactive endpoints except the full EDA
-respond within 70\,ms, forecasts and plans complete in seconds on a four-core laptop, and the
-LightGBM result reproduces exactly across machines. Within the limits below, the answer to the RQ is
-yes.
+\textbf{H1 (supported).} With no test data used for model selection, LightGBM halves the
+seasonal-naive WAPE at every one of eight origins (9.8 vs.\ 20.2\,\% on average; DM $p<10^{-4}$, sign
+test $p=0.008$). This agrees with the M5 finding that global learned models beat per-series
+statistical models on retail data~\cite{makridakis2022m5}. The size of the gap is consistent with
+information the baseline cannot use (promotions, closures, holidays and cross-store patterns); that
+attribution was not tested by ablation. The single split's 8.5\,\% is at the favourable end of the
+year-round range (8.0--14.7\,\%).
+
+\textbf{H2 (partly supported).} At 30 days the neural networks are significantly better than LightGBM
+($-1.2$ points, $p<0.001$), and LightGBM is significantly better than SARIMA. At 42 days none of the
+learned-model differences is significant over days: the ensemble's $-0.14$ points has $p=0.063$. The
+store bootstrap would call it significant, but it treats days as fixed and so ignores shocks common to
+all stores; for a decision about \emph{future} periods, the day-level DM test is the relevant one.
+
+\textbf{H3 (not supported).} The integer program is not cheaper than the rules at equal
+understaffing ($+0.00\,\%$ paid hours). The rules' rounding works as an implicit safety margin that
+already lies on the optimiser's cost--service frontier. The optimisation model is still useful,
+because it turns the safety margin into an explicit, priced choice (for example 3.4\,\% more hours for
+32\,\% less understaffing).
+
+\textbf{Uncertainty and operability.} The empirical bands of the learned models cover 77--84\,\% of
+hold-out days, while ARIMA/SARIMA bands under-cover despite being more than twice as wide. Interactive
+endpoints except the full EDA respond within 70\,ms, and the LightGBM result reproduces exactly across
+machines.
+
+\textbf{Answer to the RQ.} Yes for forecasting accuracy: the gain over the benchmark is large,
+significant and stable across origins. No for cost savings from optimised staffing in the tested
+setting, where the optimiser's contribution is to make the cost of service explicit.
 
 \subsection{Trade-offs}
-\textbf{Accuracy vs.\ cost.} The ensemble gains 0.14 percentage points over LightGBM at 42 days but
-trains a GRU, which takes ten minutes on a laptop CPU without a GPU. LightGBM is the best default
+\textbf{Accuracy vs.\ cost.} The ensemble's 0.14-point gain over LightGBM at 42 days is not
+significant, yet it requires training a GRU, which takes ten minutes on a laptop CPU without a GPU. LightGBM is the best default
 when no GPU is available; the neural models pay off at the 30-day horizon. \textbf{Direct vs.\
 recursive.} The direct strategy with a full-horizon lag offset avoids error accumulation and
 leakage, but discards the most recent weeks of information for near-term days; a family of models
 per lead-time bucket would recover it at higher training cost. \textbf{Rules vs.\ optimisation in
-planning.} Rule-based shifts are explainable and fast but do not optimise labour cost globally as an
-operations-research roster would~\cite{ernst2004staff}.
+planning.} In the tested setting the integer program did not beat the rules at equal service
+(\cref{sec:results-staffing}); its advantage is transparency about the cost of service. Richer roster
+problems---part-time contracts, breaks, weekly hour limits, several days at once---are where
+operations-research models usually outperform rules~\cite{ernst2004staff}.
 
 \subsection{Limitations and threats to validity}
 \begin{itemize}
-\item \textbf{Single split.} Results use one fixed origin per horizon. A rolling-origin
-  evaluation~\cite{tashman2000outofsample} would give error bars; the summer-holiday period in the
-  window may favour models that use the holiday flags.
+\item \textbf{Model selection on the test window.} The single-split results (\cref{tab:accuracy})
+  chose LightGBM's round count and the networks' best epoch on the reported window. The backtest uses
+  an honest protocol, but only for LightGBM and the seasonal-naive model; the neural networks and the
+  ensemble were not re-evaluated over rolling origins because each fit takes about ten minutes on the
+  available CPU.
+\item \textbf{Backtest scope.} Eight consecutive 28-day origins cover December 2014--July 2015, so
+  the origins share most of their training data and are not independent; the confidence interval over
+  origins is therefore approximate. 180 stores have no data for the second half of 2014.
+\item \textbf{Staffing model.} The data are daily, so the hourly demand profile (30/45/25\,\% per
+  shift, 14\,\% in the peak hour) is an assumption shared by the rules and the integer program.
+  Footfall forecasts use a store-level average basket; the evaluation uses actual customer counts.
 \item \textbf{Mixed environments.} 42-day ARIMA/SARIMA were trained in the local application rather
   than on the GPU host; data, stores and window are identical, but only WAPE and RMSSE were recorded
   for those two runs.
@@ -716,28 +982,29 @@ operations-research roster would~\cite{ernst2004staff}.
 
 % =====================================================================================================
 \section{Future Work}\label{sec:future}
-Each proposal addresses a limitation above. (1) Rolling-origin backtests with several cut-offs per
-horizon and confidence intervals on WAPE differences (single split). (2) Evaluation on M5 item-level
-data with intermittent-demand metrics and Tweedie/quantile objectives (data-set scope).
-(3) Conformal or quantile-head calibration per horizon week to fix the narrow 30-day GRU band
-(uncertainty). (4) Probabilistic sequence architectures such as DeepAR or TFT under the same
-protocol~\cite{salinas2020deepar,lim2021tft} (model scope). (5) A cost-minimising roster optimiser
-using the same forecasts as constraints~\cite{ernst2004staff} and a field pilot that compares
-planned and actual staffing (planning validity). (6) Load tests with concurrent tenants and a
-hosted deployment that follows the release checklist in \code{docs/PUBLIC\_PILOT.md} (performance
-scope).
+Each proposal addresses a limitation above. (1) Extend the honest rolling-origin backtest to the
+neural networks and the ensemble on the GPU, and make honest early stopping the platform default
+(model selection, backtest scope). (2) Evaluation on M5 item-level data with intermittent-demand
+metrics and Tweedie/quantile objectives (data-set scope). (3) Conformal or quantile-head calibration
+per horizon week to fix the narrow 30-day GRU band (uncertainty). (4) Probabilistic sequence
+architectures such as DeepAR or TFT under the same protocol~\cite{salinas2020deepar,lim2021tft}
+(model scope). (5) A multi-day roster model with contracts, breaks and weekly hour limits, solved
+with the same integer-programming approach~\cite{ernst2004staff}, plus a field pilot with hourly
+footfall data (staffing model). (6) Load tests with concurrent tenants and a hosted deployment that
+follows the release checklist in \code{docs/PUBLIC\_PILOT.md} (performance scope).
 
 % =====================================================================================================
 \section{Conclusion}\label{sec:conclusion}
 StorePulse AI shows that a complete forecasting-to-planning workflow can be built from open
-components and evaluated with discipline. Its contributions are a leakage-free direct multi-horizon
-pipeline with an automated leakage test, a model zoo compared on identical windows, honest tuning and
-interval calibration, an explainable planning layer, and a reproducible multi-tenant platform. On
-1,115 Rossmann stores the learned models more than halve the error of seasonal-naive, ARIMA and
-SARIMA baselines (best WAPE 8.34\,\% at 42 days and 8.52\,\% at 30 days), their P10--P90 bands
-cover 77--84\,\% of unseen days, and the platform responds interactively on a laptop. The main open
-questions concern robustness across time and data sets and the real-world value of the generated
-plans.
+components and evaluated with statistical discipline. Its contributions are a leakage-free direct
+multi-horizon pipeline with a formal justification and an automated test, a model zoo compared on
+identical windows, a rolling-origin backtest with honest model selection, significance tests that
+separate real from apparent differences, and a staffing integer program benchmarked against rules
+on realised demand. The evidence supports a large and stable accuracy gain of learned models over the
+seasonal-naive benchmark (WAPE 9.8 vs.\ 20.2\,\% across eight origins), shows that small differences
+between learned models are often not significant, and finds that optimised staffing does not save cost
+over the rules in the tested setting but makes the cost of service explicit. Open questions concern
+other data sets, honest backtests of the neural models and staffing with real hourly demand.
 
 \section*{Use of AI Tools}
 Claude Code (Anthropic) was used as an assistant throughout this project: for implementing and
@@ -782,6 +1049,10 @@ python -m scripts.train_cli train --dataset rossmann --horizon 30 --families lig
 # 5. Full application, then the report's measurements and figures
 .venv\Scripts\python -m scripts.local_stack up --present        # second terminal for the following
 .venv\Scripts\python ..\report\scripts\collect_results.py         # report/data/*.csv
+.venv\Scripts\python ..\report\scripts\backtest.py --origins 8 --horizon 28   # ~25 min, 4 cores
+.venv\Scripts\python ..\report\scripts\significance.py            # DM tests, bootstrap
+.venv\Scripts\python ..\report\scripts\staffing_ip.py --days 14   # integer program vs rules
+.venv\Scripts\python ..\report\scripts\staffing_frontier.py       # cost-understaffing frontier
 .venv\Scripts\python ..\report\scripts\bench_api.py --n 30        # API latency
 .venv\Scripts\python ..\report\scripts\make_figures.py            # report/figures/*.pdf
 .venv\Scripts\python ..\report\scripts\contrast.py                # WCAG contrast table
