@@ -119,13 +119,37 @@ def single_split() -> None:
     print(out.round(4).to_string(index=False))
 
 
-def backtest() -> None:
-    files = sorted((DATA / "backtest").glob("origin_*.parquet"))
+CANDIDATES = [
+    "seasonal_naive",
+    "lightgbm_honest",
+    "torch_mlp_honest",
+    "torch_gru_honest",
+    "ensemble_honest",
+    "lightgbm_teststop",
+]
+PAIRS = [
+    ("lightgbm_honest", "seasonal_naive"),
+    ("torch_mlp_honest", "seasonal_naive"),
+    ("torch_gru_honest", "seasonal_naive"),
+    ("ensemble_honest", "seasonal_naive"),
+    ("torch_mlp_honest", "lightgbm_honest"),
+    ("torch_gru_honest", "lightgbm_honest"),
+    ("ensemble_honest", "lightgbm_honest"),
+    ("torch_gru_honest", "torch_mlp_honest"),
+    ("lightgbm_teststop", "lightgbm_honest"),
+]
+
+
+def backtest(folder: str = "backtest", suffix: str = "") -> None:
+    """Per-origin WAPE, t-intervals over origins, and DM / bootstrap / sign tests for every model pair
+    present in report/data/<folder>/origin_*.parquet. Outputs carry `suffix` (e.g. "_gpu")."""
+    files = sorted((DATA / folder).glob("origin_*.parquet"))
     if not files:
-        print("no backtest results yet")
+        print(f"no results in {folder}")
         return
     frame = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-    models = ["seasonal_naive", "lightgbm_honest", "lightgbm_teststop"]
+    models = [m for m in CANDIDATES if m in frame.columns]
+    meta = [c for c in frame.columns if c.startswith(("rounds_", "epochs_", "ensemble_weight"))]
     per_origin = []
     for k, g in frame.groupby("origin"):
         per_origin.append(
@@ -135,13 +159,12 @@ def backtest() -> None:
                 "test_end": str(pd.Timestamp(g["ds"].max()).date()),
                 "n_rows": len(g),
                 "stores": g["store_code"].nunique(),
-                "rounds_honest": int(g["rounds_honest"].iat[0]),
-                "rounds_teststop": int(g["rounds_teststop"].iat[0]),
+                **{c: float(g[c].iat[0]) for c in meta},
                 **{f"wape_{m}": wape(g, m) for m in models},
             }
         )
     po = pd.DataFrame(per_origin).sort_values("test_start")
-    po.to_csv(DATA / "backtest_per_origin.csv", index=False)
+    po.to_csv(DATA / f"backtest_per_origin{suffix}.csv", index=False)
     K = len(po)
     summary = []
     for m in models:
@@ -156,12 +179,15 @@ def backtest() -> None:
                 "ci_hi": x.mean() + half,
                 "min": x.min(),
                 "max": x.max(),
+                "pooled_wape": wape(frame, m),
             }
         )
-    pd.DataFrame(summary).to_csv(DATA / "backtest_summary.csv", index=False)
+    pd.DataFrame(summary).to_csv(DATA / f"backtest_summary{suffix}.csv", index=False)
     daily = daily_losses(frame.copy(), models, ["origin", "ds"]).sort_values(["origin", "ds"])
     tests = []
-    for a, b in (("lightgbm_honest", "seasonal_naive"), ("lightgbm_teststop", "lightgbm_honest")):
+    for a, b in PAIRS:
+        if a not in models or b not in models:
+            continue
         lo, hi = store_bootstrap(frame, a, b)
         diffs = po[f"wape_{a}"] - po[f"wape_{b}"]
         wins = int((diffs < 0).sum())
@@ -180,7 +206,8 @@ def backtest() -> None:
             }
         )
     t = pd.DataFrame(tests)
-    t.to_csv(DATA / "significance_backtest.csv", index=False)
+    t.to_csv(DATA / f"significance_backtest{suffix}.csv", index=False)
+    print(f"== {folder}")
     print(po.round(4).to_string(index=False))
     print(pd.DataFrame(summary).round(4).to_string(index=False))
     print(t.round(5).to_string(index=False))
@@ -188,4 +215,5 @@ def backtest() -> None:
 
 if __name__ == "__main__":
     single_split()
-    backtest()
+    backtest("backtest")
+    backtest("backtest_gpu", "_gpu")
